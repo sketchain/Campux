@@ -2400,7 +2400,7 @@ function getImageUrls(attachments: unknown) {
   });
 }
 
-function assertValidImageKey(key: string, tenantId: string): void {
+export function assertValidImageKey(key: string, tenantId: string): void {
   const allowedPrefixes = [
     `tenants/${tenantId}/uploads/`,
     `tenants/${tenantId}/legacy/`,

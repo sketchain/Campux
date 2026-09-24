@@ -3,6 +3,14 @@ import { DbNull, type Prisma } from "@campux/db";
 import { prisma } from "../lib/prisma";
 import { decryptJson, encryptJson } from "../lib/secret-json";
 import { runWithActiveTenantLease } from "../lib/tenant-runtime-lease";
+import {
+  defaultPostReviewRules,
+  normalizePostReviewRules,
+  resolveStoredPostReviewSecret,
+  stripTransientPostReviewFields,
+  type PostReviewRules,
+  type PostReviewRulesInput,
+} from "./ai-post-review-settings";
 
 export type TenantAiSettingsPayload = {
   enabled: boolean;
@@ -16,7 +24,7 @@ export type TenantAiSettingsPayload = {
   rules: AiRules;
 };
 
-export type AiRules = {
+export type AiRules = PostReviewRules & {
   /** 是否启用私聊投稿 AI 语义收稿 */
   privatePostAiEnabled?: boolean | undefined;
   /** 是否启用投稿后的 LLM 自动打标 */
@@ -41,7 +49,7 @@ export type TenantAiSettingsUpdate = {
   clearApiKey?: boolean | undefined;
   temperature?: number | undefined;
   timeoutSeconds?: number | undefined;
-  rules?: AiRules | undefined;
+  rules?: (AiRules & PostReviewRulesInput) | undefined;
 };
 
 export type TenantAiSettingsTestResult = {
@@ -70,6 +78,7 @@ const defaultAiSettings: TenantAiSettingsPayload = {
     privatePostAggregateDelaySeconds: 8,
     postTriggerKeywords: [],
     privatePostPrompt: DEFAULT_PRIVATE_POST_PROMPT,
+    ...defaultPostReviewRules,
   },
 };
 
@@ -119,7 +128,7 @@ export async function updateTenantAiSettings(
       apiKeySecret,
       ...(input.temperature === undefined ? {} : { temperature: clampNumber(input.temperature, 0, 1, defaultAiSettings.temperature) }),
       ...(input.timeoutSeconds === undefined ? {} : { timeoutSeconds: Math.max(5, Math.min(120, input.timeoutSeconds)) }),
-      ...(input.rules === undefined ? {} : { rules: normalizeAiRules(input.rules) }),
+      ...(input.rules === undefined ? {} : { rules: buildStoredAiRules(input.rules, existing?.rules) }),
     },
     create: {
       tenantId,
@@ -131,7 +140,7 @@ export async function updateTenantAiSettings(
       apiKeySecret,
       temperature: clampNumber(input.temperature ?? defaultAiSettings.temperature, 0, 1, defaultAiSettings.temperature),
       timeoutSeconds: Math.max(5, Math.min(120, input.timeoutSeconds ?? defaultAiSettings.timeoutSeconds)),
-      rules: normalizeAiRules(input.rules ?? defaultAiSettings.rules),
+      rules: buildStoredAiRules(input.rules ?? defaultAiSettings.rules, existing?.rules),
     },
   });
 
@@ -286,7 +295,15 @@ export function normalizeAiRules(value: unknown): AiRules {
     privatePostAggregateDelaySeconds: normalizeNumber(candidate.privatePostAggregateDelaySeconds, 0, 120, defaultAiSettings.rules.privatePostAggregateDelaySeconds ?? 8),
     postTriggerKeywords: normalizeStringArray(candidate.postTriggerKeywords ?? defaultAiSettings.rules.postTriggerKeywords),
     privatePostPrompt: normalizePrivatePostPrompt(candidate.privatePostPrompt),
+    ...normalizePostReviewRules(candidate),
   };
+}
+
+function buildStoredAiRules(input: AiRules & PostReviewRulesInput, existingRules: unknown): Prisma.InputJsonValue {
+  return {
+    ...stripTransientPostReviewFields(normalizeAiRules(input)),
+    ...resolveStoredPostReviewSecret(input, existingRules),
+  } as Prisma.InputJsonValue;
 }
 
 function normalizeStringArray(value: unknown): string[] {

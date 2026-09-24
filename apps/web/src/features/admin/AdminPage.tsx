@@ -3,6 +3,8 @@ import {
   MAX_IMAGE_MAX_SIZE_MB,
   MIN_IMAGE_MAX_SIZE_MB,
   PRIVATE_POST_PROMPT_MAX_LENGTH,
+  DEFAULT_POST_REVIEW_MAX_RETRIES,
+  DEFAULT_POST_REVIEW_PROMPT,
   type TenantSummary,
 } from "@campux/domain";
 import type { LucideIcon } from "lucide-react";
@@ -52,6 +54,7 @@ import { hasAnyQueryParam, readQueryInt, readQueryParam, writeQueryParams } from
 import type { AdminBanRecord, AdminBotAccount, AdminBotEvent, AdminMember, AdminMemberDetail, AdminTab, AiRules, OAuthClientItem, OAuthClientSecretResponse, OAuthClientSettingsResponse, OAuthServerSettings, Pagination, PublishAttemptItem, PublishTargetItem, PublishTextTemplate, TenantAiSettings, TenantMetadata, TenantRole } from "@/types/app";
 import { EmptyCard, LoadingBlock, PaginationControls } from "@/components/app/utility";
 import { PluginConfigPage } from "./PluginConfigPage";
+import { AiPostReviewSettings } from "./AiPostReviewSettings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -171,6 +174,13 @@ type AiSettingsForm = {
   privatePostAggregateDelaySeconds: number;
   postTriggerKeywordsText: string;
   privatePostPrompt: string;
+  postReviewEnabled: boolean;
+  postReviewPrompt: string;
+  postReviewMaxRetries: number;
+  postReviewFallbackBaseUrl: string;
+  postReviewFallbackModel: string;
+  postReviewFallbackApiKey: string;
+  postReviewFallbackClearApiKey: boolean;
 };
 
 type LlmTestResult = {
@@ -593,6 +603,13 @@ export function AdminPage({
       privatePostAggregateDelaySeconds: aiForm.privatePostAggregateDelaySeconds,
       postTriggerKeywords: lines(aiForm.postTriggerKeywordsText),
       privatePostPrompt: aiForm.privatePostPrompt.trim(),
+      postReviewEnabled: aiForm.postReviewEnabled,
+      postReviewPrompt: aiForm.postReviewPrompt.trim(),
+      postReviewMaxRetries: aiForm.postReviewMaxRetries,
+      postReviewFallbackBaseUrl: aiForm.postReviewFallbackBaseUrl.trim(),
+      postReviewFallbackModel: aiForm.postReviewFallbackModel.trim(),
+      postReviewFallbackApiKey: aiForm.postReviewFallbackApiKey.trim() || undefined,
+      postReviewFallbackClearApiKey: aiForm.postReviewFallbackClearApiKey,
     };
     return {
       enabled: aiForm.enabled,
@@ -1204,6 +1221,7 @@ export function AdminPage({
                           onFormChange={setAiForm}
                           onSave={() => void saveAiSettings()}
                           onTest={() => void testAiSettings()}
+                          buildTestPayload={buildAiSettingsPayload}
                         />
                       </div>
                     ) : null}
@@ -2162,6 +2180,7 @@ function AdminAiSettingsPanel({
   onFormChange,
   onSave,
   onTest,
+  buildTestPayload,
 }: {
   settings: TenantAiSettings;
   form: AiSettingsForm;
@@ -2171,6 +2190,7 @@ function AdminAiSettingsPanel({
   onFormChange: (form: AiSettingsForm) => void;
   onSave: () => void;
   onTest: () => void;
+  buildTestPayload: () => Record<string, unknown> | null;
 }) {
   return (
     <Card className="rounded-md border-slate-200 bg-white shadow-none">
@@ -2178,7 +2198,7 @@ function AdminAiSettingsPanel({
         <PanelTitle
           icon={SparklesIcon}
           title="LLM 能力"
-          description="发布短总结和私聊智能收稿共用这组大模型配置"
+          description="自动审核、发布短总结和私聊智能收稿共用这组大模型配置"
           color="product-accent-violet"
           action={<Badge className="rounded-full bg-blue-50 text-blue-700 ring-1 ring-blue-200 shadow-none">可选</Badge>}
         />
@@ -2237,6 +2257,14 @@ function AdminAiSettingsPanel({
           </div>
 
           <div className="grid gap-3">
+            <AiPostReviewSettings
+              form={form}
+              fallbackKeyConfigured={Boolean(settings.rules.postReviewFallbackApiKeyConfigured)}
+              disabled={busy || testing}
+              buildTestPayload={buildTestPayload}
+              onFormChange={onFormChange}
+            />
+
             <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -3992,6 +4020,13 @@ function aiSettingsToForm(settings: TenantAiSettings): AiSettingsForm {
     privatePostAggregateDelaySeconds: settings.rules.privatePostAggregateDelaySeconds ?? 8,
     postTriggerKeywordsText: (settings.rules.postTriggerKeywords ?? []).join("\n"),
     privatePostPrompt: settings.rules.privatePostPrompt ?? "",
+    postReviewEnabled: Boolean(settings.rules.postReviewEnabled),
+    postReviewPrompt: settings.rules.postReviewPrompt || DEFAULT_POST_REVIEW_PROMPT,
+    postReviewMaxRetries: settings.rules.postReviewMaxRetries ?? DEFAULT_POST_REVIEW_MAX_RETRIES,
+    postReviewFallbackBaseUrl: settings.rules.postReviewFallbackBaseUrl ?? "",
+    postReviewFallbackModel: settings.rules.postReviewFallbackModel ?? "",
+    postReviewFallbackApiKey: "",
+    postReviewFallbackClearApiKey: false,
   };
 }
 

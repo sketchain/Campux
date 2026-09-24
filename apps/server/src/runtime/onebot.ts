@@ -107,6 +107,7 @@ import {
 import { buildFriendRequestAutoApprovePlan, buildSetFriendAddRequestParams, type OneBotRequestEvent } from "./onebot-friend-requests";
 import { collectOverdueReviewReminders, listPendingReviewQueue, reviewQueueReminderIntervalMs } from "./review-queue";
 import { PrivateRegistrationCoordinator } from "./private-registration";
+import { AiPostReviewer } from "./ai-post-review";
 import {
   TenantInteractionGenerationFence,
   type TenantInteractionPermit,
@@ -291,6 +292,7 @@ export class OneBotRuntime {
   private readonly qzoneProtocolAutoRefreshInFlight = new Map<string, Promise<{ cookieNames: string[]; session: { id: string } }>>();
   private readonly reviewQueueReminderTimer: Timer | null;
   private reviewQueueReminderRunning = false;
+  private readonly aiPostReviewer: AiPostReviewer;
 
   constructor(
     private readonly queue: RuntimeQueue,
@@ -298,6 +300,7 @@ export class OneBotRuntime {
     private readonly config?: CampuxConfig,
     private readonly pluginEvents?: EventBus,
   ) {
+    this.aiPostReviewer = new AiPostReviewer({ queue, logger, config, pluginEvents, notifier: this });
     this.reviewQueueReminderTimer = process.env.NODE_ENV === "test"
       ? null
       : setInterval(() => {
@@ -438,6 +441,17 @@ export class OneBotRuntime {
   }
 
   async notifyNewPost(postId: string) {
+    // AI 自动审核开启时由 AiPostReviewer 接管审核群通知（通过不通知、拒绝发一行文字、失败才发本通知）。
+    if (await this.aiPostReviewer.tryStart(postId).catch((error) => {
+      this.logger.warn({ error, postId }, "ai post review failed to start");
+      return false;
+    })) {
+      return;
+    }
+    await this.notifyPendingReview(postId, null);
+  }
+
+  async notifyPendingReview(postId: string, note: string | null) {
     const post = await prisma.post.findUnique({
       where: {
         id: postId,
@@ -474,6 +488,9 @@ export class OneBotRuntime {
       imageCount,
       channel,
     );
+    if (note) {
+      lines.unshift(`⚠️ ${note}`);
+    }
     const attachmentSegments = await this.loadPostAttachmentSegments(post.attachments);
     const message =
       attachmentSegments.length > 0

@@ -546,6 +546,21 @@ export type AiRules = {
   postTriggerKeywords?: string[];
   /** 私聊投稿 AI 语义收稿的完整系统提示词，留空使用内置默认提示词 */
   privatePostPrompt?: string;
+  /** AI 自动审核：新稿件由 AI 判定后直接放行或拒绝 */
+  postReviewEnabled?: boolean;
+  /** 自动审核提示词，输出格式由服务端固定追加 */
+  postReviewPrompt?: string;
+  /** 每个模型失败后的重试次数 */
+  postReviewMaxRetries?: number;
+  /** 备用模型接口地址，留空不启用 */
+  postReviewFallbackBaseUrl?: string;
+  postReviewFallbackModel?: string;
+  /** 只读：备用模型 API Key 是否已配置 */
+  postReviewFallbackApiKeyConfigured?: boolean;
+  /** 只写：新的备用模型 API Key */
+  postReviewFallbackApiKey?: string | undefined;
+  /** 只写：清除备用模型 API Key */
+  postReviewFallbackClearApiKey?: boolean;
 };
 
 export type PostTag = {

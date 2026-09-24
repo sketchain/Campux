@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export * from "./fonts";
+export * from "./post-review";
 
 export const DEFAULT_IMAGE_MAX_SIZE_MB = 10;
 export const MIN_IMAGE_MAX_SIZE_MB = 1;
