@@ -57,14 +57,41 @@ export function classifyGroupMemberLookupError(message: string): ClassGroupMembe
 
 export type ClassGroupFriendRequestDecision =
   | { action: "approve" }
-  | { action: "reject"; reason: "not_in_group" | "lookup_failed" };
+  | { action: "reject"; reason: "not_in_group" }
+  | { action: "defer"; reason: "lookup_failed" };
 
-/** 在群里就通过（沿用随机延迟），不在群里或查询失败都拒绝。 */
+/**
+ * 在群里就通过（沿用随机延迟）；只有明确判定不在群里才拒绝；
+ * 查询失败（超时、偶发报错）不做任何处理，留给人工，避免真同学被误拒。
+ */
 export function decideClassGroupFriendRequest(membership: ClassGroupMembership): ClassGroupFriendRequestDecision {
   if (membership === "member") {
     return { action: "approve" };
   }
-  return { action: "reject", reason: membership === "not_member" ? "not_in_group" : "lookup_failed" };
+  if (membership === "not_member") {
+    return { action: "reject", reason: "not_in_group" };
+  }
+  return { action: "defer", reason: "lookup_failed" };
+}
+
+export const defaultGroupMemberLookupRetryDelayMs = 3_000;
+
+/** 群成员查询：结果为 lookup_failed 时隔几秒重试一次，返回最后一次结果与尝试次数。 */
+export async function checkMembershipWithRetry<Result extends { membership: ClassGroupMembership }>(
+  check: () => Promise<Result>,
+  options: { retryDelayMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<Result & { attempts: number }> {
+  const first = await check();
+  if (first.membership !== "lookup_failed") {
+    return { ...first, attempts: 1 };
+  }
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  await sleep(options.retryDelayMs ?? defaultGroupMemberLookupRetryDelayMs);
+  return { ...await check(), attempts: 2 };
+}
+
+export function formatClassGroupLookupDeferredNotice(userQqUin: string) {
+  return `班级群成员查询失败，QQ ${userQqUin} 的好友申请未自动处理`;
 }
 
 export function buildRejectFriendAddRequestParams(flag: string) {

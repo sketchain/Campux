@@ -2,8 +2,10 @@ import type { FastifyBaseLogger } from "fastify";
 import {
   FriendListCache,
   buildRejectFriendAddRequestParams,
+  checkMembershipWithRetry,
   classifyGroupMemberLookupError,
   decideClassGroupFriendRequest,
+  formatClassGroupLookupDeferredNotice,
   inactiveClassGroupSettings,
   interpretGroupMemberInfo,
   parseFriendListUserIds,
@@ -33,6 +35,8 @@ export class ClassGroupGate {
   constructor(
     private readonly callAction: CallAction,
     private readonly logger: FastifyBaseLogger,
+    private readonly notifyReviewGroup: (tenantId: string, message: string) => Promise<void> = async () => undefined,
+    private readonly lookupRetryDelayMs?: number,
   ) {}
 
   async checkMembership(botQqUin: string, groupId: string, userQqUin: string): Promise<{ membership: ClassGroupMembership; error: string | null }> {
@@ -51,8 +55,11 @@ export class ClassGroupGate {
   }
 
   /**
-   * 好友申请过滤：申请人在班级群里返回 "approve"（调用方按原流程随机延迟后通过）；
-   * 不在群里或查询失败则立即拒绝并写审计日志，返回 "rejected"。
+   * 好友申请过滤：
+   * - 申请人在班级群里 → "approve"（调用方按原流程随机延迟后通过）；
+   * - 明确不在群里 → 立即拒绝、写审计日志 → "rejected"；
+   * - 查询失败（重试一次后仍失败）→ 既不同意也不拒绝，留给人工在 QQ 里处理，
+   *   审核群提示一句并写审计日志 → "deferred"。
    */
   async screenFriendRequest(input: {
     tenantId: string;
@@ -61,38 +68,56 @@ export class ClassGroupGate {
     groupId: string;
     userQqUin: string;
     flag: string;
-  }): Promise<"approve" | "rejected"> {
-    const { membership, error } = await this.checkMembership(input.botQqUin, input.groupId, input.userQqUin);
+  }): Promise<"approve" | "rejected" | "deferred"> {
+    const { membership, error, attempts } = await checkMembershipWithRetry(
+      () => this.checkMembership(input.botQqUin, input.groupId, input.userQqUin),
+      this.lookupRetryDelayMs === undefined ? {} : { retryDelayMs: this.lookupRetryDelayMs },
+    );
     const decision = decideClassGroupFriendRequest(membership);
     if (decision.action === "approve") {
       return "approve";
     }
+    const auditBase = {
+      botQqUin: input.botQqUin,
+      userQqUin: input.userQqUin,
+      groupId: input.groupId,
+      reason: decision.reason,
+      lookupAttempts: attempts,
+      lookupError: error,
+    };
+
+    if (decision.action === "defer") {
+      this.logger.warn({ ...auditBase }, "class group: member lookup failed twice; friend request left for manual handling");
+      await this.notifyReviewGroup(input.tenantId, formatClassGroupLookupDeferredNotice(input.userQqUin)).catch((caught) => {
+        this.logger.warn({ error: caught }, "class group: failed to notify review group about deferred friend request");
+      });
+      await this.writeFriendRequestAudit(input, "bot.friend_request.class_group_deferred", auditBase);
+      return "deferred";
+    }
+
     let rejectError: string | null = null;
     try {
       await this.callAction(input.botQqUin, "set_friend_add_request", buildRejectFriendAddRequestParams(input.flag), 12_000);
-      this.logger.info({ ...input, flag: undefined, reason: decision.reason }, "class group: friend request rejected");
+      this.logger.info({ ...auditBase }, "class group: friend request rejected");
     } catch (caught) {
       rejectError = caught instanceof Error ? caught.message : String(caught);
-      this.logger.warn({ ...input, flag: undefined, error: rejectError }, "class group: failed to reject friend request");
+      this.logger.warn({ ...auditBase, rejectError }, "class group: failed to reject friend request");
     }
+    await this.writeFriendRequestAudit(input, "bot.friend_request.class_group_reject", { ...auditBase, rejectError });
+    return "rejected";
+  }
+
+  private async writeFriendRequestAudit(input: { tenantId: string; botAccountId: string }, action: string, detail: Record<string, unknown>) {
     await writeAuditLog({
       tenantId: input.tenantId,
       actorId: null,
-      action: "bot.friend_request.class_group_reject",
+      action,
       targetType: "bot_account",
       targetId: input.botAccountId,
-      detail: {
-        botQqUin: input.botQqUin,
-        userQqUin: input.userQqUin,
-        groupId: input.groupId,
-        reason: decision.reason,
-        lookupError: error,
-        rejectError,
-      },
+      detail,
     }).catch((caught) => {
       this.logger.warn({ error: caught }, "class group: failed to write friend request audit log");
     });
-    return "rejected";
   }
 
   /** 查询失败按「不是好友」处理（维持原来的提示）。 */

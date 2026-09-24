@@ -48,7 +48,7 @@ export function ClassGroupPanel({ config, onChange, busy }: { config: TenantPlug
       </label>
       <Row
         title="好友申请只放行群成员"
-        description="收到好友申请时查询申请人是否在班级群：在群里随机延迟 30–90 秒后通过，不在群里或查询失败直接拒绝。"
+        description="收到好友申请时查询申请人是否在班级群：在群里随机延迟 30–90 秒后通过，确认不在群里直接拒绝；查询失败会重试一次，仍失败则留给人工处理并在审核群提示。"
         checked={section.friendFilterEnabled}
         disabled={busy}
         onChange={(value) => update({ friendFilterEnabled: value })}

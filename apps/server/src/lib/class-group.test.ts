@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
   FriendListCache,
   buildRejectFriendAddRequestParams,
+  checkMembershipWithRetry,
   classifyGroupMemberLookupError,
   decideClassGroupFriendRequest,
+  formatClassGroupLookupDeferredNotice,
   inactiveClassGroupSettings,
   interpretGroupMemberInfo,
   parseFriendListUserIds,
@@ -56,11 +58,39 @@ describe("friend request filter", () => {
     expect(classifyGroupMemberLookupError("OneBot 动作 get_group_member_info 等待响应超时")).toBe("lookup_failed");
   });
 
-  test("members are approved, everyone else is rejected", () => {
+  test("members are approved, only confirmed non-members are rejected", () => {
     expect(decideClassGroupFriendRequest("member")).toEqual({ action: "approve" });
     expect(decideClassGroupFriendRequest("not_member")).toEqual({ action: "reject", reason: "not_in_group" });
-    expect(decideClassGroupFriendRequest("lookup_failed")).toEqual({ action: "reject", reason: "lookup_failed" });
     expect(buildRejectFriendAddRequestParams("flag-1")).toEqual({ flag: "flag-1", approve: false });
+  });
+
+  test("lookup failures are deferred to humans instead of rejected", () => {
+    expect(decideClassGroupFriendRequest("lookup_failed")).toEqual({ action: "defer", reason: "lookup_failed" });
+    expect(formatClassGroupLookupDeferredNotice("20001")).toBe("班级群成员查询失败，QQ 20001 的好友申请未自动处理");
+  });
+
+  test("retries a failed lookup once after a short delay", async () => {
+    const sleeps: number[] = [];
+    const results = [
+      { membership: "lookup_failed" as const, error: "timeout" },
+      { membership: "member" as const, error: null },
+    ];
+    let calls = 0;
+    const result = await checkMembershipWithRetry(async () => results[calls++]!, { retryDelayMs: 3_000, sleep: async (ms) => { sleeps.push(ms); } });
+    expect(result).toEqual({ membership: "member", error: null, attempts: 2 });
+    expect(sleeps).toEqual([3_000]);
+  });
+
+  test("gives up after the retry and never retries definite answers", async () => {
+    let calls = 0;
+    const failing = await checkMembershipWithRetry(async () => { calls += 1; return { membership: "lookup_failed" as const }; }, { sleep: async () => undefined });
+    expect(failing).toEqual({ membership: "lookup_failed", attempts: 2 });
+    expect(calls).toBe(2);
+
+    calls = 0;
+    const definite = await checkMembershipWithRetry(async () => { calls += 1; return { membership: "not_member" as const }; }, { sleep: async () => { throw new Error("should not sleep"); } });
+    expect(definite).toEqual({ membership: "not_member", attempts: 1 });
+    expect(calls).toBe(1);
   });
 });
 

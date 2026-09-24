@@ -322,7 +322,11 @@ export class OneBotRuntime {
     private readonly pluginEvents?: EventBus,
   ) {
     this.aiPostReviewer = new AiPostReviewer({ queue, logger, config, pluginEvents, notifier: this });
-    this.classGroupGate = new ClassGroupGate((botQqUin, action, params, timeoutMs) => this.callAction(botQqUin, action, params, timeoutMs), logger);
+    this.classGroupGate = new ClassGroupGate(
+      (botQqUin, action, params, timeoutMs) => this.callAction(botQqUin, action, params, timeoutMs),
+      logger,
+      (tenantId, message) => this.sendTenantReviewNotification(tenantId, message),
+    );
     this.classGroupPublishSync = new ClassGroupPublishSync({
       callAction: (botQqUin, action, params, timeoutMs) => this.callAction(botQqUin, action, params, timeoutMs),
       sendTenantReviewNotification: (tenantId, message) => this.sendTenantReviewNotification(tenantId, message),
@@ -1239,7 +1243,7 @@ export class OneBotRuntime {
 
     const userQqUin = normalizeId(event.user_id);
     const flag = typeof event.flag === "string" ? event.flag : null;
-    // 班级群好友过滤：非群成员（或查询失败）立即拒绝；群成员按原流程随机延迟后通过。
+    // 班级群好友过滤：明确不在群里立即拒绝；查询失败留给人工；群成员按原流程随机延迟后通过。
     let classGroupMember = false;
     if (bot.enabled && userQqUin && flag && !this.pendingFriendRequestFlags.has(flag)) {
       const classGroup = await readClassGroupSettings(bot.tenantId, this.logger);
@@ -1253,7 +1257,8 @@ export class OneBotRuntime {
           userQqUin,
           flag,
         }).finally(() => this.pendingFriendRequestFlags.delete(flag));
-        if (screened === "rejected") {
+        // rejected：已拒绝；deferred：查询失败，留给人工在 QQ 里处理，不自动同意也不拒绝。
+        if (screened !== "approve") {
           return;
         }
         classGroupMember = true;
