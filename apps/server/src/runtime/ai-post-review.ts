@@ -26,6 +26,12 @@ import type { RuntimeQueue } from "./queue";
 
 /** AI 审核在插件事件里使用的 reviewerId。 */
 export const aiReviewerId = "ai";
+/** AI 审核写入的审计动作；重启恢复据此判断稿件是否已被 AI 处理过。 */
+export const aiReviewAuditActions = {
+  approve: "post.ai_review.approve",
+  reject: "post.ai_review.reject",
+  failed: "post.ai_review.failed",
+} as const;
 const aiCommentPrefix = "[AI]";
 const maxPostReviewImages = 9;
 
@@ -103,11 +109,41 @@ export class AiPostReviewer {
     if (!settings || !isAiPostReviewActive(settings)) {
       return false;
     }
+    void this.launch(postId, settings);
+    return true;
+  }
+
+  /**
+   * 重启恢复用：与 tryStart 条件相同，但等待这条稿件审核结束后才返回，便于调用方逐条串行处理。
+   * 返回 false 表示未处理（功能已关闭、稿件已不是待审核，或正由其他路径审核中）。
+   */
+  async reviewAndWait(postId: string): Promise<boolean> {
+    const post = await prisma.post.findUnique({
+      where: { id: postId },
+      select: { tenantId: true, status: true },
+    });
+    if (!post || post.status !== "pending_approval" || this.inFlight.has(postId)) {
+      return false;
+    }
+    const settings = await readTenantAiSettings(post.tenantId);
+    if (!isAiPostReviewActive(settings)) {
+      return false;
+    }
+    const launched = this.launch(postId, settings);
+    if (!launched) {
+      return false;
+    }
+    await launched;
+    return true;
+  }
+
+  /** 登记并启动一次审核；同一稿件已在审核中时返回 null。返回的 Promise 不会 reject。 */
+  private launch(postId: string, settings: TenantAiSettingsPayload): Promise<void> | null {
     if (this.inFlight.has(postId)) {
-      return true;
+      return null;
     }
     this.inFlight.add(postId);
-    void this.review(postId, settings)
+    return this.review(postId, settings)
       .catch((error) => {
         this.deps.logger.error({ error, postId }, "ai post review crashed");
         return this.fail(postId, error instanceof Error ? error.message : String(error), []);
@@ -118,7 +154,6 @@ export class AiPostReviewer {
       .finally(() => {
         this.inFlight.delete(postId);
       });
-    return true;
   }
 
   private async review(postId: string, settings: TenantAiSettingsPayload) {
@@ -228,7 +263,7 @@ export class AiPostReviewer {
       await writeAuditLog({
         tenantId: post.tenantId,
         actorId: null,
-        action: approve ? "post.ai_review.approve" : "post.ai_review.reject",
+        action: approve ? aiReviewAuditActions.approve : aiReviewAuditActions.reject,
         targetType: "post",
         targetId: post.id,
         detail: {
@@ -294,7 +329,7 @@ export class AiPostReviewer {
     await writeAuditLog({
       tenantId: post.tenantId,
       actorId: null,
-      action: "post.ai_review.failed",
+      action: aiReviewAuditActions.failed,
       targetType: "post",
       targetId: post.id,
       detail: {

@@ -108,6 +108,7 @@ import { buildFriendRequestAutoApprovePlan, buildSetFriendAddRequestParams, type
 import { collectOverdueReviewReminders, listPendingReviewQueue, reviewQueueReminderIntervalMs } from "./review-queue";
 import { PrivateRegistrationCoordinator } from "./private-registration";
 import { AiPostReviewer } from "./ai-post-review";
+import { scheduleAiPostReviewRecovery } from "./ai-post-review-recovery";
 import { ClassGroupGate, readClassGroupSettings } from "./class-group";
 import { ClassGroupPublishSync, type ClassGroupSyncInput } from "./class-group-sync";
 import {
@@ -476,6 +477,11 @@ export class OneBotRuntime {
       return;
     }
     await this.notifyPendingReview(postId, null);
+  }
+
+  /** 启动后延迟扫描一次，把重启时中断的 AI 审核重新交给 AiPostReviewer（逐条串行）。 */
+  scheduleAiPostReviewRecovery() {
+    return scheduleAiPostReviewRecovery({ reviewer: this.aiPostReviewer, logger: this.logger });
   }
 
   async notifyPendingReview(postId: string, note: string | null) {

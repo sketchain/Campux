@@ -180,6 +180,7 @@ const stopTelemetryReporter = registerTelemetryReporter({ logger: app.log, confi
 const stopFailedPublishAttemptRepublisher = registerFailedPublishAttemptRepublisher(queue, app.log);
 registerBatchFlushSweeper(queue, app.log);
 const stopCampaignScheduler = startCampaignScheduler();
+const stopAiPostReviewRecovery = oneBot.scheduleAiPostReviewRecovery();
 
 app.addHook("onClose", async () => {
   stopQZoneCookieHeartbeat();
@@ -192,6 +193,7 @@ app.addHook("onClose", async () => {
   stopFailedPublishAttemptRepublisher();
   stopBatchFlushSweeper();
   stopCampaignScheduler();
+  stopAiPostReviewRecovery();
 });
 
 await app.listen({
