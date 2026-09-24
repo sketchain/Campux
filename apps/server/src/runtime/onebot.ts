@@ -109,6 +109,7 @@ import { collectOverdueReviewReminders, listPendingReviewQueue, reviewQueueRemin
 import { PrivateRegistrationCoordinator } from "./private-registration";
 import { AiPostReviewer } from "./ai-post-review";
 import { ClassGroupGate, readClassGroupSettings } from "./class-group";
+import { ClassGroupPublishSync, type ClassGroupSyncInput } from "./class-group-sync";
 import {
   TenantInteractionGenerationFence,
   type TenantInteractionPermit,
@@ -311,6 +312,7 @@ export class OneBotRuntime {
   private reviewQueueReminderRunning = false;
   private readonly aiPostReviewer: AiPostReviewer;
   private readonly classGroupGate: ClassGroupGate;
+  private readonly classGroupPublishSync: ClassGroupPublishSync;
 
   constructor(
     private readonly queue: RuntimeQueue,
@@ -320,6 +322,12 @@ export class OneBotRuntime {
   ) {
     this.aiPostReviewer = new AiPostReviewer({ queue, logger, config, pluginEvents, notifier: this });
     this.classGroupGate = new ClassGroupGate((botQqUin, action, params, timeoutMs) => this.callAction(botQqUin, action, params, timeoutMs), logger);
+    this.classGroupPublishSync = new ClassGroupPublishSync({
+      callAction: (botQqUin, action, params, timeoutMs) => this.callAction(botQqUin, action, params, timeoutMs),
+      sendTenantReviewNotification: (tenantId, message) => this.sendTenantReviewNotification(tenantId, message),
+      logger,
+      config,
+    });
     this.reviewQueueReminderTimer = process.env.NODE_ENV === "test"
       ? null
       : setInterval(() => {
@@ -722,6 +730,10 @@ export class OneBotRuntime {
       return;
     }
     await this.sendBotReviewGroupMessage(target.botAccount, formatPublishSuccessWithTarget(post.displayId, target.displayName, externalId, stylishEnabled), "failed to notify publish succeeded");
+  }
+
+  async syncPublishedPostsToClassGroup(input: ClassGroupSyncInput) {
+    await this.classGroupPublishSync.sync(input);
   }
 
   async notifyPublishFailed(postId: string, targetId: string, message: string, options?: { needsLogin?: boolean; nextRunAt?: Date | null }) {

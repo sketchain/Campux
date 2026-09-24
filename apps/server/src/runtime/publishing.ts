@@ -9,6 +9,7 @@ import {
   QZonePublishError,
 } from "@campux/integrations";
 import { renderPostCard } from "@campux/render";
+import type { ClassGroupSyncInput } from "./class-group-sync";
 import { BotWorkflowError, qzoneCookieDomain } from "../lib/bot-workflows";
 import { serializeAssignedPostTags } from "../lib/post-tags";
 import { prisma } from "../lib/prisma";
@@ -96,6 +97,7 @@ type PublishingNotifier = {
   notifyPublishWaitingForCookies?(postId: string, targetId: string, message: string): Promise<void>;
   notifyQZoneCookiesInvalid?(botAccountId: string, message: string, options?: { autoRefreshError?: string | null }): Promise<void>;
   refreshQZoneCookiesByProtocol?(botAccountId: string, reason: "publish_login_required" | "publish_preflight_invalid"): Promise<{ cookieNames: string[] }>;
+  syncPublishedPostsToClassGroup?(input: ClassGroupSyncInput): Promise<void>;
 };
 
 type ImagePayload = {
@@ -1568,6 +1570,7 @@ async function handlePublishAttempt(queue: RuntimeQueue, logger: FastifyBaseLogg
       const isForumBatch = Boolean(attempt.batch);
       const forumTitles: Array<{ postId: number; anonymous: boolean; authorQq: string }> = [];
       const forumImageUrls: string[] = [];
+      const forumCards: Uint8Array[] = [];
       const storage = getStorageDriver(config);
       await storage.ensureReady();
       // 配置了 LLM 且开启开关时，给每条稿件追加一句极短总结（≤16 字）。失败静默跳过，不阻塞发布。
@@ -1612,6 +1615,7 @@ async function handlePublishAttempt(queue: RuntimeQueue, logger: FastifyBaseLogg
             color: tag.color,
           })),
         });
+        forumCards.push(renderedCard);
         const cardKey = `tenants/${attempt.tenantId}/published/qq-forum/${attempt.publishTargetId}/${target.id}.png`;
         const storedCard = await runPublishSideEffectWithActiveTenantLease(
           queue,
@@ -1692,6 +1696,15 @@ async function handlePublishAttempt(queue: RuntimeQueue, logger: FastifyBaseLogg
           logger.warn({ error, postId: target.id, publishTargetId: attempt.publishTargetId }, "failed to notify publish success");
         });
       }
+      // 班级群同步：复用已渲染的卡片，后台执行，失败不影响发布状态。
+      void notifier?.syncPublishedPostsToClassGroup?.({
+        tenantId: attempt.tenantId,
+        botAccount: attempt.publishTarget.botAccount,
+        batch: isForumBatch,
+        posts: postsToPublish.map((target, index) => ({ postId: target.id, displayId: target.displayId, card: forumCards[index], attachments: target.attachments })),
+      }).catch((error) => {
+        logger.warn({ error, publishTargetId: attempt.publishTargetId }, "failed to sync published posts to class group");
+      });
       await refreshAttemptPostStatuses(attempt);
       logger.info({ ...attemptLogContext, durationMs: Date.now() - attemptStartedAt }, "publish attempt succeeded");
       return;
@@ -1841,6 +1854,21 @@ async function handlePublishAttempt(queue: RuntimeQueue, logger: FastifyBaseLogg
         logger.warn({ error, postId: target.id, publishTargetId: attempt.publishTargetId }, "failed to notify publish success");
       });
     }
+    // 班级群同步：复用已渲染的卡片与已读取的原图，后台执行，失败不影响发布状态。
+    void notifier?.syncPublishedPostsToClassGroup?.({
+      tenantId: attempt.tenantId,
+      botAccount: attempt.publishTarget.botAccount,
+      batch: isBatch,
+      posts: postsToPublish.map((target, index) => ({
+        postId: target.id,
+        displayId: target.displayId,
+        card: imageGroups[index]?.renderedCard,
+        images: imageGroups[index]?.images,
+        attachments: target.attachments,
+      })),
+    }).catch((error) => {
+      logger.warn({ error, publishTargetId: attempt.publishTargetId }, "failed to sync published posts to class group");
+    });
     logger.info({ ...attemptLogContext, durationMs: Date.now() - attemptStartedAt }, "publish attempt succeeded");
   } catch (caught) {
     const currentAttempt = await prisma.publishAttempt.findUniqueOrThrow({
