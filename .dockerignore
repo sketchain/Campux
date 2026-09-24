@@ -17,3 +17,7 @@ legacy
 Dockerfile
 docker-compose*.yaml
 docker-compose*.yml
+
+# 单容器部署的运行时数据与本地生成的 Prisma client 不进构建上下文
+data
+packages/db/generated

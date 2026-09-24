@@ -124,3 +124,35 @@ Bun workspace · Vite + React · Fastify · Prisma + PostgreSQL · S3 兼容存�
 ## 许可证
 
 [Apache License 2.0](./LICENSE)
+
+## 单容器部署（SQLite，本分叉）
+
+面向「一面墙只服务一个班级」的场景：只有 campux 一个容器，SQLite + 本地文件存储，所有数据落在 `./data`。镜像从本仓库构建，不拉官方镜像。
+
+```bash
+# 1. 准备 .env（与 docker-compose.single.yaml 同目录）
+echo "CAMPUX_BOT_SESSION_SECRET=$(openssl rand -hex 32)" > .env
+echo "CAMPUX_WEB_ORIGIN=https://wall.example.com" >> .env   # 对外访问地址；本机试用可不填，默认 http://localhost:8989
+
+# 2. 构建并启动（首次启动自动建库）
+docker compose -f docker-compose.single.yaml up -d --build
+```
+
+浏览器打开 `CAMPUX_WEB_ORIGIN` 进入初始化向导，选择**单墙模式**并创建管理员与校园墙。`CAMPUX_BOT_SESSION_SECRET` 用于加密 Bot 登录态和 AI 备用模型密钥，请和数据一起妥善保存，丢失后已保存的密钥无法解密。匿名遥测在该部署下固定关闭。
+
+**备份**：先停容器，再打包整个 `data/` 目录（`campux.db`、`campux.db-wal`、`campux.db-shm` 与 `uploads/` 必须一起备份），最后启动：
+
+```bash
+docker compose -f docker-compose.single.yaml stop
+tar czf campux-backup-$(date +%F).tgz data/ .env
+docker compose -f docker-compose.single.yaml start
+```
+
+恢复时把压缩包解回原目录后再 `up -d`。
+
+**连接 NapCat**：在「管理 / 机器人」里添加 Bot，展开「协议连接」复制 OneBot 反向 WebSocket 地址（形如 `ws://<域名>/onebot/v11/ws?bot_id=...&token=...`），在 NapCat 网络配置里新建「WebSocket 客户端」（反向 WS），URL 填这个地址，消息格式选 array。NapCat 与 Campux 不在同一台机器时，把地址里的主机名换成 NapCat 能访问到的地址；走 HTTPS 反代时协议用 `wss://`。
+
+**班级群相关功能**（均默认关闭）：
+
+- 「管理 / 墙面设置 / LLM 设置」里的**自动审核**：AI 看图文，只拒绝血腥、暴力、恐怖内容，通过即发布；可配置备用模型，全部失败转人工。
+- 「管理 / 插件配置 / 班级群」：填写班级群号后可分别开启好友申请只放行群成员、好友投稿自动开通、发布后同步到班级群。开启「好友投稿自动开通」后，建议把 Bot 的私聊自动回复改成不再提「首次私聊会自动注册」的文案。

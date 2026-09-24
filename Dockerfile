@@ -27,6 +27,9 @@ RUN git clone --depth=1 https://github.com/idoknow/Campux-ttf.git /tmp/Campux-tt
 
 RUN bun install --frozen-lockfile
 RUN bun run db:generate
+# SQLite 形态（DATABASE_URL=file:...）在运行时 require packages/db/generated/sqlite；
+# 该目录不入库，必须在镜像里生成，否则单容器 SQLite 部署启动即崩溃。
+RUN DATABASE_URL=file:/tmp/campux-build.db bun --cwd packages/db prisma generate --schema prisma/schema.sqlite.prisma
 RUN bun run build
 
 FROM oven/bun:${BUN_VERSION}-alpine AS runtime

@@ -1,0 +1,40 @@
+# 单容器部署：只有 campux 一个服务，SQLite + 本地文件存储，全部数据在 ./data（挂到 /app/data）。
+# 从本仓库构建，不拉官方镜像。
+#
+#   1. 在本文件旁建 .env，至少写入：
+#        CAMPUX_BOT_SESSION_SECRET=<openssl rand -hex 32 的输出>
+#        CAMPUX_WEB_ORIGIN=https://wall.example.com   # 对外访问地址，本机试用可省略
+#   2. docker compose -f docker-compose.single.yaml up -d --build
+#   3. 打开 CAMPUX_WEB_ORIGIN（默认 http://localhost:8989）进入初始化向导，选择单墙模式。
+#
+# 备份：docker compose -f docker-compose.single.yaml stop && tar czf campux-backup.tgz data/ && docker compose -f docker-compose.single.yaml start
+services:
+  campux:
+    build:
+      context: .
+    image: campux-single:local
+    container_name: campux
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: file:/app/data/campux.db
+      CAMPUX_STORAGE_DRIVER: local
+      CAMPUX_STORAGE_LOCAL_DIR: /app/data/uploads
+      CAMPUX_SERVER_HOST: 0.0.0.0
+      CAMPUX_SERVER_PORT: 8989
+      CAMPUX_WEB_ORIGIN: ${CAMPUX_WEB_ORIGIN:-http://localhost:8989}
+      CAMPUX_WEB_DIST_DIR: /app/apps/web/dist
+      # 必填：加密存储的 Bot 会话 cookie 与 AI 备用模型密钥。丢失后已存的密钥无法解密。
+      CAMPUX_BOT_SESSION_SECRET: ${CAMPUX_BOT_SESSION_SECRET:?set CAMPUX_BOT_SESSION_SECRET in your .env (openssl rand -hex 32)}
+      CAMPUX_TELEMETRY_DISABLED: "true"
+      PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: /usr/bin/chromium-browser
+    ports:
+      - "${CAMPUX_PORT:-8989}:8989"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e \"fetch('http://127.0.0.1:8989/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
