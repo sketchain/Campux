@@ -89,7 +89,7 @@ import {
   formatPrivatePostAppendAck,
   formatPrivatePostConfirmPrompt,
   formatPrivatePostCancelled,
-  formatPrivateHelp,
+  resolvePrivateHelpReply,
   formatPrivateReplySent,
   formatPrivateReplyReceived,
   formatPrivateReplyNoTarget,
@@ -1712,7 +1712,7 @@ export class OneBotRuntime {
         // 保留原有自动回复
         if (!registrationGuidanceHandled && this.shouldSendPrivateAutoReply(bot.id, userQqUin, bot.userMessageReplyCooldownSeconds)) {
           const stylishEnabled = await readTenantBotStylishMessagesEnabled(prisma, bot.tenantId);
-          await this.sendPrivateMessage(botQqUin, userQqUin, bot.userMessageReply || formatPrivateHelp(stylishEnabled)).catch(() => undefined);
+          await this.sendPrivateMessage(botQqUin, userQqUin, resolvePrivateHelpReply(bot.userMessageReply, stylishEnabled, lazyRegistration)).catch(() => undefined);
         }
         return;
       }
@@ -1754,7 +1754,7 @@ export class OneBotRuntime {
         return;
       }
       const generalStylishEnabled = await readTenantBotStylishMessagesEnabled(prisma, bot.tenantId);
-      await this.sendPrivateMessage(botQqUin, userQqUin, bot.userMessageReply || formatPrivateHelp(generalStylishEnabled));
+      await this.sendPrivateMessage(botQqUin, userQqUin, resolvePrivateHelpReply(bot.userMessageReply, generalStylishEnabled, lazyRegistration));
     } catch (error) {
       await this.sendPrivateMessage(botQqUin, userQqUin, toErrorMessage(error)).catch(() => undefined);
     }
@@ -3333,7 +3333,8 @@ export class OneBotRuntime {
       if (!this.interactionFence.isCurrent(permit)) {
         return;
       }
-      await this.sendPrivateMessage(buffer.botQqUin, buffer.userQqUin, buffer.bot.userMessageReply || formatPrivateHelp(stylishEnabled)).catch(() => undefined);
+      const lazyRegistration = (await readClassGroupSettings(buffer.tenantId, this.logger)).lazyRegisterActive;
+      await this.sendPrivateMessage(buffer.botQqUin, buffer.userQqUin, resolvePrivateHelpReply(buffer.bot.userMessageReply, stylishEnabled, lazyRegistration)).catch(() => undefined);
     }
   }
 

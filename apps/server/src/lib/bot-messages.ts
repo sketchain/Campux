@@ -786,9 +786,58 @@ const privateHelpStylish = [
   privateHelpDefault,
 ];
 
-export function formatPrivateHelp(stylishEnabled = false): string {
+// 班级群懒注册开启时：不再首条私聊注册，好友发 #投稿 时才开通，也不主动私发密码。
+const privateHelpLazyDefault = [
+  "班级群同学加好友后，直接发 #投稿 即可投稿，然后回复 #匿名 或 #实名 选择投稿方式。",
+  "选择后继续发送添加稿件正文及图片，删除上一句话请发送 #撤回，结束投稿并发布请发送 #结束。",
+  "取消本次投稿请发送 #取消。",
+  "需要网页登录时，请发送 #重置密码 获取密码。",
+].join("\n");
+
+const privateHelpLazyStylish = [
+  [
+    "📋 我可以帮你做这些事：",
+    "",
+    "班级群同学加好友后 — 直接发 #投稿 即可投稿",
+    "需要网页登录时发送 #重置密码 — 获取密码",
+    "#投稿 正文 — 开始对话投稿",
+    "#取消 — 取消本次投稿",
+  ].join("\n"),
+  [
+    "✨ 试试这些功能吧：",
+    "",
+    "• 班级群同学加好友后，直接发 #投稿 即可投稿",
+    "• 需要网页登录时发送 #重置密码 获取密码",
+    "• #投稿 正文/图片 — 开始投稿",
+    "• #取消 — 取消投稿",
+  ].join("\n"),
+  privateHelpLazyDefault,
+];
+
+/**
+ * 私聊帮助文案。lazyRegistration 为 true（班级群懒注册开启）时不再提「首次私聊自动注册」；
+ * 为 false 时与原文案完全一致。
+ */
+export function formatPrivateHelp(stylishEnabled = false, lazyRegistration = false): string {
+  if (lazyRegistration) {
+    return stylishEnabled ? pick(privateHelpLazyStylish) : privateHelpLazyDefault;
+  }
   if (!stylishEnabled) return privateHelpDefault;
   return pick(privateHelpStylish);
+}
+
+/** 与 schema.prisma 中 BotAccount.userMessageReply 的默认值保持一致（出厂自动回复）。 */
+export const DEFAULT_BOT_USER_MESSAGE_REPLY = "首次私聊会自动注册 Campux 账号。\n发送 #投稿 开始投稿。\n忘记密码时，请发送 #重置密码 获取新密码。";
+
+/**
+ * 私聊自动回复：优先用 Bot 自定义回复；懒注册开启时，未改过的出厂默认回复（写着「首次私聊会自动注册」）
+ * 视为未自定义，改用懒注册版帮助文案。懒注册关闭时行为与原来一致。
+ */
+export function resolvePrivateHelpReply(customReply: string | null | undefined, stylishEnabled: boolean, lazyRegistration: boolean): string {
+  if (lazyRegistration && (!customReply || customReply.trim() === DEFAULT_BOT_USER_MESSAGE_REPLY)) {
+    return formatPrivateHelp(stylishEnabled, true);
+  }
+  return customReply || formatPrivateHelp(stylishEnabled);
 }
 
 // ── 私信回复 ──────────────────────────────────────────
