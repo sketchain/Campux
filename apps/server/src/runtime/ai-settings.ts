@@ -73,8 +73,9 @@ const defaultAiSettings: TenantAiSettingsPayload = {
   timeoutSeconds: 30,
   rules: {
     privatePostAiEnabled: false,
-    postTaggingEnabled: true,
-    postTagMaintenanceEnabled: true,
+    // 配好 LLM 后不自动打标 / 维护标签库，避免默默烧 token；需要时在 AI 设置页手动开启。
+    postTaggingEnabled: false,
+    postTagMaintenanceEnabled: false,
     privatePostAggregateDelaySeconds: 8,
     postTriggerKeywords: [],
     privatePostPrompt: DEFAULT_PRIVATE_POST_PROMPT,

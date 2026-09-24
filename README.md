@@ -45,7 +45,7 @@
 
 ## 匿名遥测
 
-自托管实例默认每 2 小时向 Campux 官方中心服务上报匿名聚合统计（实例数、版本、稿件/用户计数），**不含任何用户内容、域名或身份信息**，用于了解版本分布与维护优先级。设置 `CAMPUX_TELEMETRY_DISABLED=true` 即可完全关闭，字段明细与隐私边界见[遥测说明](https://docs.campux.top/admin/telemetry)。
+本分叉**默认关闭**匿名遥测。如需向 Campux 官方中心服务上报匿名聚合统计（实例数、版本、稿件/用户计数，**不含任何用户内容、域名或身份信息**），显式设置 `CAMPUX_TELEMETRY_DISABLED=false` 即可开启，字段明细与隐私边界见[遥测说明](https://docs.campux.top/admin/telemetry)。
 
 ## 文档
 

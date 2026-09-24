@@ -35,8 +35,8 @@ const configSchema = z.object({
   // Build/release identifier baked into the Docker image by CI (branch-sha).
   // Surfaces in anonymous telemetry so the fleet version distribution is known.
   CAMPUX_BUILD_VERSION: z.string().optional(),
-  // Opt out of anonymous telemetry when "true"/"1". See docs/admin/telemetry.md
-  // for exactly what is reported.
+  // Anonymous telemetry is off unless this is explicitly "false"/"0". See
+  // docs/admin/telemetry.md for exactly what is reported.
   CAMPUX_TELEMETRY_DISABLED: z.string().optional(),
   // Central telemetry collector. Outside production the reporter only runs when
   // this is set explicitly (so local dev instances never pollute fleet stats).
@@ -66,6 +66,14 @@ const DEFAULT_TELEMETRY_ENDPOINT = "https://dash.campux.top";
 
 function flagEnabled(value: string | undefined): boolean {
   return value === "1" || value === "true";
+}
+
+/**
+ * 本分叉默认关闭匿名遥测：未设置或留空都视为关闭，只有显式设为 `false` / `0` 才开启上报。
+ */
+export function telemetryDisabled(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return !(normalized === "false" || normalized === "0");
 }
 
 export type CampuxConfig = ReturnType<typeof loadConfig>;
@@ -164,7 +172,7 @@ export function loadConfig() {
     },
     buildVersion: env.CAMPUX_BUILD_VERSION ?? "dev",
     telemetry: {
-      disabled: flagEnabled(env.CAMPUX_TELEMETRY_DISABLED),
+      disabled: telemetryDisabled(env.CAMPUX_TELEMETRY_DISABLED),
       endpoint: env.CAMPUX_TELEMETRY_ENDPOINT ?? DEFAULT_TELEMETRY_ENDPOINT,
       // Whether the operator pointed the reporter somewhere explicitly; gates
       // reporting outside production (see resolveTelemetryTarget).

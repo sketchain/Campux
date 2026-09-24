@@ -15,3 +15,13 @@ describe("AI settings normalization", () => {
     expect(normalizeAiRules({ privatePostPrompt: " 自定义提示词 " }).privatePostPrompt).toBe("自定义提示词");
   });
 });
+
+describe("AI settings defaults", () => {
+  test("tagging and tag maintenance stay off until an admin enables them", () => {
+    const rules = normalizeAiRules(undefined);
+    expect(rules.postTaggingEnabled).toBe(false);
+    expect(rules.postTagMaintenanceEnabled).toBe(false);
+    expect(rules.privatePostAiEnabled).toBe(false);
+    expect(normalizeAiRules({ postTaggingEnabled: true }).postTaggingEnabled).toBe(true);
+  });
+});

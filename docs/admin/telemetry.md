@@ -29,21 +29,23 @@ Campux 自托管实例默认会向官方中心服务 `dash.campux.top` 上报**�
 - 上报失败静默重试（debug 级日志），不影响实例任何功能
 - `NODE_ENV` 非 `production` 时**默认不上报**（除非显式设置了 `CAMPUX_TELEMETRY_ENDPOINT`，用于本地调试管线）
 
-## 如何退出
+## 如何开启 / 退出
 
-在 `.env` 或容器环境中设置：
+本分叉**默认关闭**遥测：`CAMPUX_TELEMETRY_DISABLED` 未设置或留空时不上报，启动日志会输出 `anonymous telemetry disabled by CAMPUX_TELEMETRY_DISABLED`。
+
+需要上报时，在 `.env` 或容器环境中显式开启：
 
 ```ini
-CAMPUX_TELEMETRY_DISABLED=true
+CAMPUX_TELEMETRY_DISABLED=false
 ```
 
-重启后日志会输出 `anonymous telemetry disabled by CAMPUX_TELEMETRY_DISABLED`。
+改回 `true`（或删掉该变量）并重启即可再次关闭。
 
 ## 相关配置
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `CAMPUX_TELEMETRY_DISABLED` | 空 | `true`/`1` 完全关闭遥测 |
+| `CAMPUX_TELEMETRY_DISABLED` | 空（关闭） | 默认关闭遥测；显式设为 `false`/`0` 才开启上报 |
 | `CAMPUX_TELEMETRY_ENDPOINT` | `https://dash.campux.top` | 中心收集服务地址；可指向自建收集器 |
 | `CAMPUX_TELEMETRY_INSTANCE_NAME` | 空 | 自愿的公开实例标签（≤64 字符），显示在全网看板 |
 

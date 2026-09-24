@@ -174,7 +174,7 @@ export function registerTelemetryReporter({ logger, config }: { logger: FastifyB
 
   logger.info(
     { endpoint: reportUrl, intervalHours: reportIntervalMs / 3_600_000 },
-    "anonymous telemetry enabled (aggregate counters only; opt out with CAMPUX_TELEMETRY_DISABLED=1, see docs.campux.top/admin/telemetry)",
+    "anonymous telemetry enabled (aggregate counters only; unset CAMPUX_TELEMETRY_DISABLED or set it to true to opt out, see docs.campux.top/admin/telemetry)",
   );
 
   let stopped = false;

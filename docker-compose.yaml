@@ -35,11 +35,10 @@ services:
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-campux-secret}
       S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-http://localhost:9000/campux-next}
       PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: /usr/bin/chromium-browser
-      # Anonymous telemetry: production instances report aggregate counters
-      # (instance/tenant/user/post totals — never content or identities) to
-      # dash.campux.top every 2 h. Set to "true" to opt out; details:
+      # Anonymous telemetry is OFF by default in this fork. Set to "false" to
+      # opt in to aggregate counters (never content or identities); details:
       # https://docs.campux.top/admin/telemetry
-      CAMPUX_TELEMETRY_DISABLED: ${CAMPUX_TELEMETRY_DISABLED:-}
+      CAMPUX_TELEMETRY_DISABLED: ${CAMPUX_TELEMETRY_DISABLED:-true}
       # Optional public label for your instance on the fleet dashboard.
       CAMPUX_TELEMETRY_INSTANCE_NAME: ${CAMPUX_TELEMETRY_INSTANCE_NAME:-}
     ports:
