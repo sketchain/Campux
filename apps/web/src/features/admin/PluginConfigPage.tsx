@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import { builtInSvgAvatarFilenames } from "@/lib/built-in-svg-avatars";
 import { filterPluginAuditLogs } from "./plugin-audit-log-filter";
 import { AggregateLoginIcon, AggregateLoginPluginIcon, AGGREGATE_LOGIN_TYPE_LABELS } from "../aggregate-oauth/icons";
+import { ClassGroupIcon, ClassGroupPanel } from "./ClassGroupPluginPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -84,7 +85,7 @@ export function CampaignsIcon({ className }: PluginIconProps) {
   );
 }
 
-type PluginId = "markdownRender" | "colorSelection" | "fontSelection" | "anonymousAvatar" | "botStylishMessages" | "campaigns" | "aggregateLogin";
+type PluginId = "markdownRender" | "colorSelection" | "fontSelection" | "anonymousAvatar" | "botStylishMessages" | "campaigns" | "aggregateLogin" | "classGroup";
 type PluginPermission = "db:read" | "db:write" | "events:emit" | "events:listen" | "http:route" | "config:read" | "tenant:data" | "user:data";
 
 type PluginRisk = "low" | "medium" | "high";
@@ -150,6 +151,7 @@ const PRESET_NAME_BY_ID: PresetNameByConfigId = {
   botStylishMessages: "campux-plugin-bot-stylish-messages",
   campaigns: "campux-plugin-campaigns",
   aggregateLogin: "campux-plugin-aggregate-login",
+  classGroup: "campux-plugin-class-group",
 };
 
 // 侧栏只展示预设插件；已启用计数与条目高亮也只统计预设插件的 registry 状态。
@@ -819,6 +821,29 @@ const PLUGINS: PluginDescriptor[] = [
     setEnabled: (config, value) => ({ ...config, aggregateLogin: { ...config.aggregateLogin, enabled: value } }),
     render: (config, onChange, busy) => <AggregateLoginPanel config={config} onChange={onChange} busy={busy} />,
   },
+  {
+    id: "classGroup",
+    icon: ClassGroupIcon,
+    name: "班级群",
+    tagline: "Class Group",
+    description: "一面墙服务一个班级 QQ 群：好友过滤、投稿自动开通、发布同步到群",
+    detailedDescription:
+      "本插件用于只服务一个班级 QQ 群的校园墙，三项能力可分别开关，关闭时与原版行为一致。\n\n" +
+      "好友申请只放行群成员：收到好友申请后用 get_group_member_info 查询申请人是否在班级群里。在群里按原有随机延迟（30–90 秒）通过；不在群里或查询失败直接拒绝，并写入审计日志。\n\n" +
+      "好友投稿自动开通：不再在首条私聊时注册账号并私发密码。用户发起投稿、发送 #注册账号 或 #重置密码 时，若是 Bot 好友就自动开通投稿权限；需要网页登录时自己发送 #重置密码 获取密码。非好友维持原有提示。封禁检查不变。\n\n" +
+      "发布后同步到班级群：QQ 空间发布成功后，用该发布目标对应的 Bot 把发布时渲染的卡片图和投稿原图发到班级群。单条发布发一条群消息，合并发布整批发成一条合并转发；同一稿件多个发布目标只同步一次。匿名稿以卡片呈现为准，不带投稿人 QQ。同步失败只记日志并在审核群提示，不影响发布状态。",
+    author: "Campux",
+    hint: "填写班级群号后按需开启三项能力。",
+    accent: "from-sky-500 to-blue-600",
+    bgTint: "bg-sky-50 text-sky-700",
+    role: "admin",
+    required: ["config:read", "db:read", "db:write", "user:data", "tenant:data"],
+    riskLevel: "medium",
+    rationale: "查询班级群成员与 Bot 好友列表决定好友申请与账号开通，并把已发布稿件卡片发到班级群；匿名稿只发卡片，不带投稿人 QQ。",
+    enabled: (config) => config.classGroup.enabled,
+    setEnabled: (config, value) => ({ ...config, classGroup: { ...config.classGroup, enabled: value } }),
+    render: (config, onChange, busy) => <ClassGroupPanel config={config} onChange={onChange} busy={busy} />,
+  },
 ];
 
 function ensureBotMessageDefaults(config: TenantPluginConfig): TenantPluginConfig {
@@ -878,6 +903,13 @@ function buildInitialConfig(metadata: TenantMetadata): TenantPluginConfig {
       appId: "",
       appKey: "",
       endpoint: "",
+    },
+    classGroup: {
+      enabled: false,
+      groupId: "",
+      friendFilterEnabled: false,
+      lazyRegisterEnabled: false,
+      publishSyncEnabled: false,
     },
   };
 }

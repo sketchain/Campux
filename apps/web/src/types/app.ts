@@ -207,6 +207,17 @@ export type TenantPluginConfig = {
     appKey: string;
     endpoint: string;
   };
+  classGroup: {
+    enabled: boolean;
+    /** 班级 QQ 群号 */
+    groupId: string;
+    /** 好友申请只放行班级群成员 */
+    friendFilterEnabled: boolean;
+    /** Bot 好友投稿时自动开通（不再首条私聊注册） */
+    lazyRegisterEnabled: boolean;
+    /** QQ 空间发布成功后同步到班级群 */
+    publishSyncEnabled: boolean;
+  };
 };
 export type PostAttachment = {
   kind: "image";

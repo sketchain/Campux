@@ -1,7 +1,7 @@
 /**
  * 预设插件元数据。
  *
- * 6 个租户级预设插件（Markdown 渲染 / 多彩投稿 / 字体选择 / 匿名头像 / Bot 多彩消息 / 投票竞选）
+ * 租户级预设插件（Markdown 渲染 / 多彩投稿 / 字体选择 / 匿名头像 / Bot 多彩消息 / 投票竞选 / 聚合登录 / 班级群）
  * 已经存在 tenant_metadata.plugin_config 里，不作为 CampuxPlugin 实例注册进 pluginRegistry。
  * 每个租户的「已注册插件」= registry 已注册插件 + 6 个预设插件；
  * 预设插件的「已启用」= plugin_config.*.enabled === true。
@@ -19,7 +19,8 @@ export type PresetPluginId =
   | "anonymousAvatar"
   | "botStylishMessages"
   | "campaigns"
-  | "aggregateLogin";
+  | "aggregateLogin"
+  | "classGroup";
 
 export interface PresetPluginEntry {
   /** tenant_metadata.plugin_config 的 section 名 */
@@ -96,6 +97,15 @@ export const PRESET_PLUGINS: PresetPluginEntry[] = [
     required: ["config:read", "db:read", "db:write", "user:data", "http:route"],
     riskLevel: "medium",
     rationale: "把第三方社交 UID 建立对本地账号的绑定，并用其匹配登录；凭证(appid/appkey)属租户配置，需限制访问。",
+  },
+  {
+    id: "classGroup",
+    name: "campux-plugin-class-group",
+    version: "1.0.0",
+    description: "班级群：好友申请只放行班级群成员、好友投稿懒注册、发布成功后同步到班级群",
+    required: ["config:read", "db:read", "db:write", "user:data", "tenant:data"],
+    riskLevel: "medium",
+    rationale: "查询班级群成员与 Bot 好友列表决定好友申请与账号开通，并把已发布稿件卡片发到班级群；匿名稿只发卡片，不带投稿人 QQ。",
   },
 ];
 

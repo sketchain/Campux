@@ -108,6 +108,7 @@ import { buildFriendRequestAutoApprovePlan, buildSetFriendAddRequestParams, type
 import { collectOverdueReviewReminders, listPendingReviewQueue, reviewQueueReminderIntervalMs } from "./review-queue";
 import { PrivateRegistrationCoordinator } from "./private-registration";
 import { AiPostReviewer } from "./ai-post-review";
+import { ClassGroupGate, readClassGroupSettings } from "./class-group";
 import {
   TenantInteractionGenerationFence,
   type TenantInteractionPermit,
@@ -259,6 +260,22 @@ const reviewHelp = [
   "#扫码登录",
 ].join("\n");
 
+/** 班级群懒注册开启时代替首条私聊注册的占位结果：不建号、不私发密码。 */
+const skippedEagerPrivateRegistration = {
+  result: { registration: { password: null }, createdAccess: false, noticeSent: false },
+  shouldAnnounce: false,
+  coalesced: false,
+  lostDatabaseRace: false,
+};
+
+function formatLazyRegistrationReady(loginUrl: string) {
+  return `已开通本墙投稿权限，发送 #投稿 即可开始投稿。\n需要网页登录时发送 #重置密码 获取密码。\n登录链接：${loginUrl}`;
+}
+
+function formatLazyRegistrationNotFriend() {
+  return "请先添加我为好友（仅限班级群成员）后再试。";
+}
+
 function readRecallReason(comment: string | undefined): string | null {
   const prefix = "用户申请撤回：";
   if (!comment?.startsWith(prefix)) {
@@ -293,6 +310,7 @@ export class OneBotRuntime {
   private readonly reviewQueueReminderTimer: Timer | null;
   private reviewQueueReminderRunning = false;
   private readonly aiPostReviewer: AiPostReviewer;
+  private readonly classGroupGate: ClassGroupGate;
 
   constructor(
     private readonly queue: RuntimeQueue,
@@ -301,6 +319,7 @@ export class OneBotRuntime {
     private readonly pluginEvents?: EventBus,
   ) {
     this.aiPostReviewer = new AiPostReviewer({ queue, logger, config, pluginEvents, notifier: this });
+    this.classGroupGate = new ClassGroupGate((botQqUin, action, params, timeoutMs) => this.callAction(botQqUin, action, params, timeoutMs), logger);
     this.reviewQueueReminderTimer = process.env.NODE_ENV === "test"
       ? null
       : setInterval(() => {
@@ -1200,9 +1219,29 @@ export class OneBotRuntime {
       return;
     }
 
-    const plan = buildFriendRequestAutoApprovePlan(event, bot);
     const userQqUin = normalizeId(event.user_id);
     const flag = typeof event.flag === "string" ? event.flag : null;
+    // 班级群好友过滤：非群成员（或查询失败）立即拒绝；群成员按原流程随机延迟后通过。
+    let classGroupMember = false;
+    if (bot.enabled && userQqUin && flag && !this.pendingFriendRequestFlags.has(flag)) {
+      const classGroup = await readClassGroupSettings(bot.tenantId, this.logger);
+      if (classGroup.friendFilterActive && classGroup.groupId) {
+        this.pendingFriendRequestFlags.add(flag);
+        const screened = await this.classGroupGate.screenFriendRequest({
+          tenantId: bot.tenantId,
+          botAccountId: bot.id,
+          botQqUin: bot.qqUin.toString(),
+          groupId: classGroup.groupId,
+          userQqUin,
+          flag,
+        }).finally(() => this.pendingFriendRequestFlags.delete(flag));
+        if (screened === "rejected") {
+          return;
+        }
+        classGroupMember = true;
+      }
+    }
+    const plan = buildFriendRequestAutoApprovePlan(event, classGroupMember ? { ...bot, autoFriendRequestApprovalEnabled: true } : bot);
     if (!plan) {
       this.logger.info(
         {
@@ -1246,6 +1285,7 @@ export class OneBotRuntime {
         userQqUin: plan.userQqUin,
         flag: plan.flag,
         delayMs: plan.delayMs,
+        classGroupMember,
       }).catch((error) => {
         this.logger.warn({ error, botAccountId: bot.id, botQqUin: bot.qqUin.toString(), userQqUin: plan.userQqUin }, "onebot friend request auto approval failed");
       });
@@ -1253,7 +1293,7 @@ export class OneBotRuntime {
     this.pendingFriendRequestTimers.set(plan.flag, { tenantId: bot.tenantId, timer });
   }
 
-  private async executeFriendRequestAutoApproval(options: { botAccountId: string; tenantId: string; botQqUin: string; userQqUin: string; flag: string; delayMs: number }) {
+  private async executeFriendRequestAutoApproval(options: { botAccountId: string; tenantId: string; botQqUin: string; userQqUin: string; flag: string; delayMs: number; classGroupMember?: boolean }) {
     try {
       const bot = await prisma.botAccount.findFirst({
         where: {
@@ -1267,7 +1307,7 @@ export class OneBotRuntime {
         },
       });
 
-      if (!bot?.enabled || !bot.autoFriendRequestApprovalEnabled) {
+      if (!bot?.enabled || !(bot.autoFriendRequestApprovalEnabled || options.classGroupMember)) {
         this.logger.info(
           {
             botAccountId: options.botAccountId,
@@ -1303,6 +1343,7 @@ export class OneBotRuntime {
           botQqUin: options.botQqUin,
           userQqUin: options.userQqUin,
           delayMs: options.delayMs,
+          ...(options.classGroupMember ? { classGroupMember: true } : {}),
         },
       });
 
@@ -1334,7 +1375,9 @@ export class OneBotRuntime {
         return;
       }
       const loginUrl = await this.resolveCampuxLoginUrl(bot.tenantId);
-      const registrationExecution = await this.privateRegistrationCoordinator.run(
+      // 班级群懒注册：不在首条私聊时注册并私发密码，改为投稿 / #注册账号 / #重置密码 时对好友按需建号。
+      const lazyRegistration = (await readClassGroupSettings(bot.tenantId, this.logger)).lazyRegisterActive;
+      const registrationExecution = lazyRegistration ? skippedEagerPrivateRegistration : await this.privateRegistrationCoordinator.run(
         `${bot.tenantId}:${userQqUin}`,
         async () => {
           const result = await registerUserViaBot({
@@ -1652,6 +1695,11 @@ export class OneBotRuntime {
       }
 
       if (command.name === "注册账号") {
+        if (lazyRegistration) {
+          const registered = await this.ensureLazyPrivateSubmitter(bot.tenantId, botQqUin, userQqUin, event.sender?.card || event.sender?.nickname || null);
+          await this.sendPrivateMessage(botQqUin, userQqUin, registered ? formatLazyRegistrationReady(loginUrl) : formatLazyRegistrationNotFriend());
+          return;
+        }
         if (registrationGuidanceHandled) {
           return;
         }
@@ -1661,6 +1709,10 @@ export class OneBotRuntime {
       }
       if (command.name === "重置密码") {
         if (registration.password || registrationExecution.lostDatabaseRace) {
+          return;
+        }
+        if (lazyRegistration && !await this.ensureLazyPrivateSubmitter(bot.tenantId, botQqUin, userQqUin, event.sender?.card || event.sender?.nickname || null)) {
+          await this.sendPrivateMessage(botQqUin, userQqUin, formatLazyRegistrationNotFriend());
           return;
         }
         const reset = await this.privatePasswordResetCoordinator.run(
@@ -1714,7 +1766,7 @@ export class OneBotRuntime {
     semantic?: PrivatePostSemanticResult | undefined;
     aiIntakeEnabled?: boolean;
   }) {
-    await this.ensurePrivatePostingAllowed(bot.tenantId, userQqUin);
+    await this.ensurePrivatePostingAllowed(bot.tenantId, userQqUin, { botQqUin, displayName: event.sender?.card || event.sender?.nickname || null });
     const permit = this.interactionFence.snapshot(bot.tenantId);
     if (!this.interactionFence.isCurrent(permit)) {
       throw new BotWorkflowError("校园墙已暂停或归档", 409);
@@ -1967,8 +2019,8 @@ export class OneBotRuntime {
     await this.sendPrivateMessage(botQqUin, userQqUin, formatSubmissionSuccess(post.displayId, stylishEnabled));
   }
 
-  private async ensurePrivatePostingAllowed(tenantId: string, userQqUin: string) {
-    const operator = await prisma.user.findUnique({
+  private async ensurePrivatePostingAllowed(tenantId: string, userQqUin: string, lazy?: { botQqUin: string; displayName: string | null }) {
+    const findOperator = () => prisma.user.findUnique({
       where: {
         qqUin: BigInt(userQqUin),
       },
@@ -1976,7 +2028,12 @@ export class OneBotRuntime {
         memberships: true,
       },
     });
-    const membership = operator?.memberships.find((item) => item.tenantId === tenantId);
+    let operator = await findOperator();
+    let membership = operator?.memberships.find((item) => item.tenantId === tenantId);
+    if ((!operator || !membership) && lazy && await this.ensureLazyPrivateSubmitter(tenantId, lazy.botQqUin, userQqUin, lazy.displayName)) {
+      operator = await findOperator();
+      membership = operator?.memberships.find((item) => item.tenantId === tenantId);
+    }
     if (!operator || !membership || !hasTenantRole(membership.role, "submitter")) {
       throw new BotWorkflowError("这个 QQ 还没有注册本校园墙，请先发 #注册账号。", 404);
     }
@@ -1987,6 +2044,32 @@ export class OneBotRuntime {
     }
 
     return { operator, membership };
+  }
+
+  /**
+   * 班级群懒注册：懒注册开启且对方是 Bot 好友时以 submitter 身份建号（不私发密码，
+   * 需要网页登录时自己发 #重置密码）。已有账号返回 true；未开启或不是好友返回 false。
+   */
+  private async ensureLazyPrivateSubmitter(tenantId: string, botQqUin: string, userQqUin: string, displayName: string | null) {
+    if (!(await readClassGroupSettings(tenantId, this.logger)).lazyRegisterActive) {
+      return false;
+    }
+    const existing = await prisma.tenantMembership.findFirst({
+      where: { tenantId, user: { qqUin: BigInt(userQqUin) } },
+      select: { id: true },
+    });
+    if (existing) {
+      return true;
+    }
+    if (!await this.classGroupGate.isFriend(botQqUin, userQqUin)) {
+      return false;
+    }
+    await this.privateRegistrationCoordinator.run(`${tenantId}:${userQqUin}`, async () => {
+      const result = await registerUserViaBot({ botQqUin, userQqUin, displayName, role: "submitter" });
+      return { registration: result, createdAccess: !result.alreadyHadTenantAccess, noticeSent: false };
+    });
+    this.logger.info({ tenantId, botQqUin, userQqUin }, "class group: lazily registered private submitter");
+    return true;
   }
 
   private async clearPrivatePostDraft(draftKey: string) {
@@ -2377,7 +2460,7 @@ export class OneBotRuntime {
     userQqUin: string,
     draft: PrivatePostDraft,
   ) {
-    const access = await this.ensurePrivatePostingAllowed(bot.tenantId, userQqUin);
+    const access = await this.ensurePrivatePostingAllowed(bot.tenantId, userQqUin, { botQqUin: bot.qqUin.toString(), displayName: null });
     const text = draft.text.trim();
 
     if (!text) {

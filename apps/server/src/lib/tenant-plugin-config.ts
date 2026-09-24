@@ -16,6 +16,14 @@ const colorPresetSchema = z.object({
   hex: z.string().regex(/^#[0-9a-fA-F]{6}$/),
 });
 
+const defaultClassGroupConfig = {
+  enabled: false,
+  groupId: "",
+  friendFilterEnabled: false,
+  lazyRegisterEnabled: false,
+  publishSyncEnabled: false,
+};
+
 export const tenantPluginConfigSchema = z.object({
   markdownRender: z
     .object({ enabled: z.boolean() })
@@ -100,6 +108,17 @@ export const tenantPluginConfigSchema = z.object({
       appKey: "",
       endpoint: "",
     }),
+  // 班级群：单墙服务一个班级 QQ 群。好友申请只放行群成员、好友私聊投稿时懒注册、
+  // QQ 空间发布成功后把卡片图同步到群里。各项默认关闭，关闭时与原版行为一致。
+  classGroup: z
+    .object({
+      enabled: z.boolean(),
+      groupId: z.string().trim().regex(/^\d{0,20}$/).default(""),
+      friendFilterEnabled: z.boolean().default(false),
+      lazyRegisterEnabled: z.boolean().default(false),
+      publishSyncEnabled: z.boolean().default(false),
+    })
+    .default({ ...defaultClassGroupConfig }),
 });
 
 export type TenantPluginConfig = z.infer<typeof tenantPluginConfigSchema>;
@@ -121,6 +140,7 @@ export const defaultTenantPluginConfig: TenantPluginConfig = {
     appKey: "",
     endpoint: "",
   },
+  classGroup: { ...defaultClassGroupConfig },
 };
 
 export function parseTenantPluginConfig(value: unknown): TenantPluginConfig {
