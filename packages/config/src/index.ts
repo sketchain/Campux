@@ -38,6 +38,10 @@ const configSchema = z.object({
   // Anonymous telemetry is off unless this is explicitly "false"/"0". See
   // docs/admin/telemetry.md for exactly what is reported.
   CAMPUX_TELEMETRY_DISABLED: z.string().optional(),
+  // Whether login cookies carry the Secure attribute. Unset keeps the default
+  // (Secure in production); "false"/"0" drops it so plain-http LAN access such
+  // as http://192.168.x.x:8989 can log in. Only turn it off on a trusted LAN.
+  CAMPUX_COOKIE_SECURE: z.string().optional(),
   // Central telemetry collector. Outside production the reporter only runs when
   // this is set explicitly (so local dev instances never pollute fleet stats).
   CAMPUX_TELEMETRY_ENDPOINT: z.string().optional(),
@@ -71,6 +75,24 @@ function flagEnabled(value: string | undefined): boolean {
 /**
  * 本分叉默认关闭匿名遥测：未设置或留空都视为关闭，只有显式设为 `false` / `0` 才开启上报。
  */
+/**
+ * 登录类 cookie 是否带 Secure。
+ * - CAMPUX_COOKIE_SECURE 未设置 / 留空 / 无法识别：保持原行为，NODE_ENV=production 时带 Secure；
+ * - 设为 false / 0：不带 Secure（仅建议内网 http 访问时使用）；
+ * - 设为 true / 1：始终带 Secure。
+ * nodeEnv 传原始的 process.env.NODE_ENV，与原先的判断保持一致（未设置时不带）。
+ */
+export function resolveCookieSecure(nodeEnv: string | undefined, value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "false" || normalized === "0") {
+    return false;
+  }
+  if (normalized === "true" || normalized === "1") {
+    return true;
+  }
+  return nodeEnv === "production";
+}
+
 export function telemetryDisabled(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
   return !(normalized === "false" || normalized === "0");
@@ -148,6 +170,7 @@ export function loadConfig() {
 
   return {
     nodeEnv: env.NODE_ENV,
+    cookieSecure: resolveCookieSecure(process.env.NODE_ENV, env.CAMPUX_COOKIE_SECURE),
     databaseUrl: env.DATABASE_URL,
     dbProvider,
     serverHost: env.CAMPUX_SERVER_HOST,

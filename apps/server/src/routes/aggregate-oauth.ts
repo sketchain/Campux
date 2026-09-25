@@ -42,6 +42,7 @@ import {
   type AggregateOauthLoginType,
 } from "../lib/aggregate-oauth";
 import { readTenantPluginConfig } from "../lib/tenant-plugin-config";
+import { isCookieSecure } from "../lib/cookie-security";
 import { findManagementHostByRequest, findTenantByRequestHost } from "../lib/tenant-host";
 import { resolveEffectiveTenantMembership } from "../lib/tenant-access";
 
@@ -174,14 +175,14 @@ function assertAggregateReady(plugin: { enabled: boolean; loginTypes: string[]; 
   }
 }
 
-function buildAggregateStateCookie(token: string, maxAgeSeconds: number): string {
+export function buildAggregateStateCookie(token: string, maxAgeSeconds: number, secure = isCookieSecure()): string {
   const parts = [
     `${AGGREGATE_STATE_COOKIE}=${encodeURIComponent(token)}`,
     `Path=${AGGREGATE_STATE_COOKIE_PATH}`,
     "HttpOnly",
     "SameSite=Lax",
     `Max-Age=${maxAgeSeconds}`,
-    process.env.NODE_ENV === "production" ? "Secure" : null,
+    secure ? "Secure" : null,
   ];
   return parts.filter((part): part is string => Boolean(part)).join("; ");
 }

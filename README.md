@@ -140,6 +140,8 @@ docker compose -f docker-compose.single.yaml up -d --build
 
 浏览器打开 `CAMPUX_WEB_ORIGIN` 进入初始化向导，选择**单墙模式**并创建管理员与校园墙。`CAMPUX_BOT_SESSION_SECRET` 用于加密 Bot 登录态和 AI 备用模型密钥，请和数据一起妥善保存，丢失后已保存的密钥无法解密。匿名遥测在该部署下固定关闭。
 
+**内网 http 访问**：登录 cookie 默认带 `Secure`，浏览器只在 https 或 `localhost` 下保存它。如果要在局域网里用 `http://192.168.x.x:8989` 这类地址登录，在 `.env` 里加上 `CAMPUX_COOKIE_SECURE=false` 后重启容器。**只建议在可信内网、没有 HTTPS 的情况下关闭**；对公网开放或已经走 HTTPS 反代时保持默认。不要为此修改 `NODE_ENV`，它必须保持 `production`。
+
 **备份**：先停容器，再打包整个 `data/` 目录（`campux.db`、`campux.db-wal`、`campux.db-shm` 与 `uploads/` 必须一起备份），最后启动：
 
 ```bash

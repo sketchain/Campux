@@ -4,6 +4,7 @@
 #   1. 在本文件旁建 .env，至少写入：
 #        CAMPUX_BOT_SESSION_SECRET=<openssl rand -hex 32 的输出>
 #        CAMPUX_WEB_ORIGIN=https://wall.example.com   # 对外访问地址，本机试用可省略
+#        CAMPUX_COOKIE_SECURE=false   # 仅在内网用 http://192.168.x.x:8989 访问时才需要，见下方说明
 #   2. docker compose -f docker-compose.single.yaml up -d --build
 #   3. 打开 CAMPUX_WEB_ORIGIN（默认 http://localhost:8989）进入初始化向导，选择单墙模式。
 #
@@ -27,6 +28,10 @@ services:
       # 必填：加密存储的 Bot 会话 cookie 与 AI 备用模型密钥。丢失后已存的密钥无法解密。
       CAMPUX_BOT_SESSION_SECRET: ${CAMPUX_BOT_SESSION_SECRET:?set CAMPUX_BOT_SESSION_SECRET in your .env (openssl rand -hex 32)}
       CAMPUX_TELEMETRY_DISABLED: "true"
+      # 登录 cookie 是否带 Secure。留空保持默认（production 下带 Secure，只能通过 https 或 localhost 登录）。
+      # 只建议在内网用 http://192.168.x.x:8989 这类地址访问时设为 false，否则浏览器会丢弃登录 cookie；
+      # 走公网或 HTTPS 反代时不要关闭。NODE_ENV 必须保持 production，不要靠改它来绕过。
+      CAMPUX_COOKIE_SECURE: ${CAMPUX_COOKIE_SECURE:-}
       PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: /usr/bin/chromium-browser
     ports:
       - "${CAMPUX_PORT:-8989}:8989"

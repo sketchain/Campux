@@ -6,6 +6,7 @@ import { isSyntheticSystemOperatorMembership, resolveEffectiveTenantMembership }
 import { findTenantByRequestHost } from "./tenant-host";
 import { resolveSingleModeTenantId } from "./deploy-mode";
 import { isTenantRuntimeActiveStatus } from "./tenant-runtime";
+import { isCookieSecure } from "./cookie-security";
 
 export const sessionCookieName = "campux_session";
 const sessionMaxAgeSeconds = 60 * 60 * 24 * 7;
@@ -44,14 +45,14 @@ export function issueSessionToken() {
   return randomBytes(32).toString("base64url");
 }
 
-function serializeSessionCookie(value: string, maxAgeSeconds: number) {
+export function serializeSessionCookie(value: string, maxAgeSeconds: number, secure = isCookieSecure()) {
   return [
     `${sessionCookieName}=${encodeURIComponent(value)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
     `Max-Age=${maxAgeSeconds}`,
-    process.env.NODE_ENV === "production" ? "Secure" : null,
+    secure ? "Secure" : null,
   ]
     .filter((part): part is string => Boolean(part))
     .join("; ");

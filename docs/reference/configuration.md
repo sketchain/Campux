@@ -94,6 +94,7 @@ Campux 支持两种数据库，**同一套数据模型、同一份业务代码**
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `CAMPUX_COOKIE_SECURE` | 空 | 登录 cookie 是否带 `Secure`；留空时 `production` 下带；设为 `false`/`0` 不带（仅建议内网 http 访问时使用），`true`/`1` 始终带 |
 | `CAMPUX_TELEMETRY_DISABLED` | 空（关闭） | 默认关闭匿名遥测；显式设为 `false`/`0` 才开启上报 |
 | `CAMPUX_TELEMETRY_ENDPOINT` | `https://dash.campux.top` | 中心收集服务地址；非生产环境仅在显式设置时上报 |
 | `CAMPUX_TELEMETRY_INSTANCE_NAME` | 空 | 自愿的公开实例标签（≤64 字符） |
