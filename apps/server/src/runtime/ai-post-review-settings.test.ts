@@ -8,6 +8,7 @@ import {
   stripTransientPostReviewFields,
 } from "./ai-post-review-settings";
 import { normalizeAiRules } from "./ai-settings";
+import { defaultLlmModelParams } from "./llm-params";
 
 process.env.CAMPUX_BOT_SESSION_SECRET ??= "test-post-review-secret";
 
@@ -20,6 +21,7 @@ describe("post review rules", () => {
       postReviewFallbackBaseUrl: "",
       postReviewFallbackModel: "",
       postReviewFallbackApiKeyConfigured: false,
+      postReviewFallbackParams: defaultLlmModelParams,
     });
   });
 

@@ -2,6 +2,8 @@ import { Buffer } from "node:buffer";
 import { z } from "zod";
 import { compressImageBuffer } from "../lib/attachments";
 import { POST_REVIEW_OUTPUT_INSTRUCTION } from "./ai-post-review-settings";
+import { buildLlmRequest, callLlm, extractFirstJsonObject, type LlmMessage } from "./llm-client";
+import type { LlmModelParams } from "./llm-params";
 
 /**
  * AI 自动审核的模型调用层：请求构造、输出校验、重试 / 备用模型回退、图片预处理。
@@ -20,7 +22,9 @@ export type PostReviewModelEndpoint = {
   baseUrl: string;
   model: string;
   apiKey: string;
+  /** 默认超时；高级参数里配置了超时则以其为准 */
   timeoutMs: number;
+  params?: LlmModelParams | undefined;
 };
 
 export type PostReviewImage = {
@@ -59,25 +63,13 @@ export const postReviewTextMaxChars = 2_000;
 export class PostReviewOutputError extends Error {}
 
 /**
- * 解析并校验模型输出。允许外层包了 ```json 代码块；
+ * 解析并校验模型输出。允许外层包了 ```json 代码块或前后夹带文字（取第一个完整 JSON 对象）；
  * 字段不合规（decision 缺失 / 取值不对）一律视为本次调用失败。
  */
 export function parsePostReviewDecision(raw: string): PostReviewDecision {
-  const text = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start < 0 || end <= start) {
-      throw new PostReviewOutputError("模型输出不是 JSON");
-    }
-    try {
-      parsed = JSON.parse(text.slice(start, end + 1));
-    } catch {
-      throw new PostReviewOutputError("模型输出不是 JSON");
-    }
+  const parsed = extractFirstJsonObject(raw);
+  if (!parsed) {
+    throw new PostReviewOutputError("模型输出不是 JSON");
   }
   const result = decisionSchema.safeParse(parsed);
   if (!result.success) {
@@ -139,76 +131,65 @@ export function buildPostReviewSystemPrompt(prompt: string) {
   return `${prompt.trim()}\n\n${POST_REVIEW_OUTPUT_INSTRUCTION}`;
 }
 
+/** AI 审核调用原有的 token 预算与 temperature（高级参数未配置时使用）。 */
+export const postReviewMaxTokens = 300;
+export const postReviewTemperature = 0;
+
+export function buildPostReviewMessages(options: { prompt: string; text: string; images: PostReviewImage[] }): LlmMessage[] {
+  const text = options.text.trim().slice(0, postReviewTextMaxChars);
+  const intro = options.images.length > 0
+    ? `稿件正文如下（另附 ${options.images.length} 张图片，请逐张查看）：`
+    : "稿件正文如下（纯文字稿，无图片）：";
+  return [
+    { role: "system", content: buildPostReviewSystemPrompt(options.prompt) },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: `${intro}\n${text || "（无正文）"}` },
+        ...options.images.map((image) => ({
+          type: "image_url" as const,
+          image_url: { url: `data:${image.mimeType};base64,${image.base64}` },
+        })),
+      ],
+    },
+  ];
+}
+
+/** 默认参数下的请求体（与迁移前的 Chat Completions 请求一致），供测试与排查对照。 */
 export function buildPostReviewRequestBody(options: {
   model: string;
   prompt: string;
   text: string;
   images: PostReviewImage[];
 }) {
-  const text = options.text.trim().slice(0, postReviewTextMaxChars);
-  const intro = options.images.length > 0
-    ? `稿件正文如下（另附 ${options.images.length} 张图片，请逐张查看）：`
-    : "稿件正文如下（纯文字稿，无图片）：";
-  return {
-    model: options.model,
-    temperature: 0,
-    max_tokens: 300,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: buildPostReviewSystemPrompt(options.prompt) },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: `${intro}\n${text || "（无正文）"}` },
-          ...options.images.map((image) => ({
-            type: "image_url",
-            image_url: { url: `data:${image.mimeType};base64,${image.base64}` },
-          })),
-        ],
-      },
-    ],
-  };
+  return buildLlmRequest(
+    { baseUrl: "", model: options.model, apiKey: "" },
+    {
+      messages: buildPostReviewMessages(options),
+      json: true,
+      defaults: { timeoutMs: 0, maxTokens: postReviewMaxTokens, temperature: postReviewTemperature },
+    },
+  ).body;
 }
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
-/** 调一次 OpenAI 兼容 /chat/completions 并校验输出。任何异常都抛出，由重试层处理。 */
+/** 通过统一 LLM 客户端调一次审核模型并校验输出。任何异常都抛出，由重试层处理。 */
 export async function callPostReviewModel(
   endpoint: PostReviewModelEndpoint,
   request: { prompt: string; text: string; images: PostReviewImage[] },
-  fetchImpl: FetchLike = fetch,
+  fetchImpl?: FetchLike,
 ): Promise<PostReviewDecision> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), endpoint.timeoutMs);
-  try {
-    const response = await fetchImpl(`${endpoint.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${endpoint.apiKey}`,
-      },
-      body: JSON.stringify(buildPostReviewRequestBody({ model: endpoint.model, ...request })),
-    });
-    const data = (await response.json().catch(() => null)) as
-      | { choices?: Array<{ message?: { content?: string | null } }>; error?: { message?: string } }
-      | null;
-    if (!response.ok) {
-      throw new Error(data?.error?.message || `HTTP ${response.status}`);
-    }
-    const content = data?.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new PostReviewOutputError("模型没有返回内容");
-    }
-    return parsePostReviewDecision(content);
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`请求超时（${Math.round(endpoint.timeoutMs / 1000)} 秒）`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
+  const report = await callLlm(
+    { baseUrl: endpoint.baseUrl, model: endpoint.model, apiKey: endpoint.apiKey, params: endpoint.params },
+    {
+      messages: buildPostReviewMessages(request),
+      json: true,
+      defaults: { timeoutMs: endpoint.timeoutMs, maxTokens: postReviewMaxTokens, temperature: postReviewTemperature },
+    },
+    fetchImpl,
+  );
+  return parsePostReviewDecision(report.text);
 }
 
 /**

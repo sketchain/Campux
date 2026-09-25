@@ -152,9 +152,12 @@ describe("buildPostReviewRequestBody", () => {
       text: "正文",
       images: [{ mimeType: "image/jpeg", base64: "AAAA" }, { mimeType: "image/png", base64: "BBBB" }],
     });
+    const messages = body.messages as Array<{ content: unknown }>;
     expect(body.response_format).toEqual({ type: "json_object" });
-    expect(body.messages[0]?.content).toBe(`自定义标准\n\n${POST_REVIEW_OUTPUT_INSTRUCTION}`);
-    const userContent = body.messages[1]?.content as Array<Record<string, unknown>>;
+    expect(body.max_tokens).toBe(300);
+    expect(body.temperature).toBe(0);
+    expect(messages[0]?.content).toBe(`自定义标准\n\n${POST_REVIEW_OUTPUT_INSTRUCTION}`);
+    const userContent = messages[1]?.content as Array<Record<string, unknown>>;
     expect(userContent).toHaveLength(3);
     expect(userContent[1]).toEqual({ type: "image_url", image_url: { url: "data:image/jpeg;base64,AAAA" } });
     expect(userContent[2]).toEqual({ type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } });
@@ -162,7 +165,7 @@ describe("buildPostReviewRequestBody", () => {
 
   test("text-only posts are still reviewed", () => {
     const body = buildPostReviewRequestBody({ model: "m", prompt: "p", text: "只有文字", images: [] });
-    const userContent = body.messages[1]?.content as Array<{ type: string; text?: string }>;
+    const userContent = (body.messages as Array<{ content: unknown }>)[1]?.content as Array<{ type: string; text?: string }>;
     expect(userContent).toHaveLength(1);
     expect(userContent[0]?.text).toContain("只有文字");
   });

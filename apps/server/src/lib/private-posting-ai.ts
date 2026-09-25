@@ -1,6 +1,7 @@
 import type { FastifyBaseLogger } from "fastify";
 import { DEFAULT_PRIVATE_POST_PROMPT } from "@campux/domain";
-import { normalizeBaseUrl, readTenantAiSettings, resolveTenantAiApiKey } from "../runtime/ai-settings";
+import { buildPrimaryLlmEndpoint, readTenantAiSettings, resolveTenantAiApiKey } from "../runtime/ai-settings";
+import { callLlm, describeLlmFailure, extractFirstJsonObject } from "../runtime/llm-client";
 import { prisma } from "./prisma";
 import { runWithActiveTenantLease } from "./tenant-runtime-lease";
 
@@ -111,56 +112,32 @@ export async function analyzePrivatePostSemantics(input: PrivatePostSemanticInpu
     return fallback;
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.min(settings.timeoutSeconds, 20) * 1_000);
   const systemPrompt = buildPrivatePostSystemPrompt(settings.rules.privatePostPrompt);
   try {
-    const leased = await runWithActiveTenantLease(prisma, input.tenantId, async () => {
-      const response = await fetch(`${normalizeBaseUrl(settings.baseUrl)}/chat/completions`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+    const leased = await runWithActiveTenantLease(prisma, input.tenantId, () => callLlm(buildPrimaryLlmEndpoint(settings, apiKey), {
+      json: true,
+      defaults: { timeoutMs: Math.min(settings.timeoutSeconds, 20) * 1_000, maxTokens: 600, temperature: 0 },
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt,
         },
-        body: JSON.stringify({
-          model: settings.model,
-          temperature: 0,
-          max_tokens: 600,
-          response_format: { type: "json_object" },
-          messages: [
-            {
-              role: "system",
-              content: systemPrompt,
-            },
-            {
-              role: "user",
-              content: JSON.stringify({
-                currentDraftText: input.currentDraftText?.trim() || "",
-                hasCurrentDraft: Boolean(input.hasCurrentDraft),
-                imageCount: input.imageCount ?? 0,
-                messageText,
-              }),
-            },
-          ],
-        }),
-      });
-      const data = (await response.json().catch(() => null)) as
-        | { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } }
-        | null;
-      return { response, data };
-    });
+        {
+          role: "user",
+          content: JSON.stringify({
+            currentDraftText: input.currentDraftText?.trim() || "",
+            hasCurrentDraft: Boolean(input.hasCurrentDraft),
+            imageCount: input.imageCount ?? 0,
+            messageText,
+          }),
+        },
+      ],
+    }));
     if (!leased.active) {
       return fallback;
     }
-    const { response, data } = leased.value;
-    if (!response.ok) {
-      input.logger.warn({ tenantId: input.tenantId, status: response.status, error: data?.error?.message }, "private post semantic: LLM request failed");
-      return fallback;
-    }
 
-    const content = data?.choices?.[0]?.message?.content;
-    const parsed = parsePrivatePostSemanticJson(content ?? "");
+    const parsed = parsePrivatePostSemanticJson(leased.value.text);
     if (!parsed) {
       input.logger.warn({ tenantId: input.tenantId }, "private post semantic: invalid LLM JSON");
       return fallback;
@@ -169,11 +146,8 @@ export async function analyzePrivatePostSemantics(input: PrivatePostSemanticInpu
     const normalized = normalizePrivatePostSemanticResult(parsed, input);
     return normalized.confidence >= 0.4 ? normalized : fallback;
   } catch (error) {
-    const aborted = error instanceof Error && error.name === "AbortError";
-    input.logger.warn({ error, tenantId: input.tenantId, aborted }, "private post semantic: LLM call errored");
+    input.logger.warn({ tenantId: input.tenantId, ...describeLlmFailure(error) }, "private post semantic: LLM call failed");
     return fallback;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -256,21 +230,7 @@ export function parsePrivatePostSemanticJson(raw: string): PrivatePostSemanticRe
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> | null {
-  const trimmed = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
-  if (!trimmed) {
-    return null;
-  }
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start < 0 || end <= start) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(trimmed.slice(start, end + 1));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
+  return extractFirstJsonObject(raw);
 }
 
 function splitPostSections(text: string) {

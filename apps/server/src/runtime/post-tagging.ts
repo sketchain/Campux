@@ -1,6 +1,7 @@
 import type { FastifyBaseLogger } from "fastify";
 import type { Prisma } from "@campux/db";
-import { normalizeBaseUrl, readTenantAiSettings, resolveTenantAiApiKey } from "./ai-settings";
+import { buildPrimaryLlmEndpoint, readTenantAiSettings, resolveTenantAiApiKey } from "./ai-settings";
+import { callLlm, describeLlmFailure, extractFirstJsonObject } from "./llm-client";
 import { assignPostTags, maxTagsPerPost, normalizeTagName, tagColorForName } from "../lib/post-tags";
 import { prisma } from "../lib/prisma";
 import { isTenantRuntimeActive, tenantRuntimeRelationFilter } from "../lib/tenant-runtime";
@@ -172,69 +173,42 @@ export async function generatePostTagSuggestion(options: {
     return null;
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.min(settings.timeoutSeconds, 20) * 1_000);
   try {
-    const leased = await runWithActiveTenantLease(prisma, options.tenantId, async () => {
-      const response = await fetch(`${normalizeBaseUrl(settings.baseUrl)}/chat/completions`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+    const leased = await runWithActiveTenantLease(prisma, options.tenantId, () => callLlm(buildPrimaryLlmEndpoint(settings, apiKey), {
+      json: true,
+      defaults: { timeoutMs: Math.min(settings.timeoutSeconds, 20) * 1_000, maxTokens: 500, temperature: 0 },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "你是校园墙稿件标签助手。只返回 JSON，不要 Markdown。",
+            `目标：为一条校园墙稿件选择最多 ${maxTagsPerPost} 个主题标签。`,
+            "优先复用 existingTags 里的 name，selected 必须是已有标签名。",
+            "不要创建新标签；如果没有合适的已有标签，selected 返回空数组。",
+            "标签名 2-8 个汉字最佳，不能包含 #、表情、个人隐私、姓名、QQ、联系方式。",
+            "不确定时少打标。",
+            "返回格式：{\"selected\":[\"已有标签名\"],\"confidence\":0到1}",
+          ].join("\n"),
         },
-        body: JSON.stringify({
-          model: settings.model,
-          temperature: 0,
-          max_tokens: 500,
-          response_format: { type: "json_object" },
-          messages: [
-            {
-              role: "system",
-              content: [
-                "你是校园墙稿件标签助手。只返回 JSON，不要 Markdown。",
-                `目标：为一条校园墙稿件选择最多 ${maxTagsPerPost} 个主题标签。`,
-                "优先复用 existingTags 里的 name，selected 必须是已有标签名。",
-                "不要创建新标签；如果没有合适的已有标签，selected 返回空数组。",
-                "标签名 2-8 个汉字最佳，不能包含 #、表情、个人隐私、姓名、QQ、联系方式。",
-                "不确定时少打标。",
-                "返回格式：{\"selected\":[\"已有标签名\"],\"confidence\":0到1}",
-              ].join("\n"),
-            },
-            {
-              role: "user",
-              content: JSON.stringify({
-                existingTags: options.existingTags.map((tag) => ({
-                  name: tag.name,
-                  description: tag.description,
-                })),
-                text: options.text.trim().slice(0, tagPromptMaxTextChars),
-              }),
-            },
-          ],
-        }),
-      });
-      const data = (await response.json().catch(() => null)) as
-        | { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } }
-        | null;
-      return { response, data };
-    });
+        {
+          role: "user",
+          content: JSON.stringify({
+            existingTags: options.existingTags.map((tag) => ({
+              name: tag.name,
+              description: tag.description,
+            })),
+            text: options.text.trim().slice(0, tagPromptMaxTextChars),
+          }),
+        },
+      ],
+    }));
     if (!leased.active) {
       return null;
     }
-    const { response, data } = leased.value;
-    if (!response.ok) {
-      options.logger.warn({ tenantId: options.tenantId, status: response.status, error: data?.error?.message }, "post tags: LLM request failed");
-      return null;
-    }
-    const parsed = parsePostTagSuggestionJson(data?.choices?.[0]?.message?.content ?? "");
-    return parsed;
+    return parsePostTagSuggestionJson(leased.value.text);
   } catch (error) {
-    const aborted = error instanceof Error && error.name === "AbortError";
-    options.logger.warn({ error, tenantId: options.tenantId, aborted }, "post tags: LLM call errored");
+    options.logger.warn({ tenantId: options.tenantId, ...describeLlmFailure(error) }, "post tags: LLM call failed");
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -332,80 +306,52 @@ export async function maintainTenantPostTags(options: {
     return emptyResult();
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), tagMaintenanceTimeoutMs);
   try {
-    const leased = await runWithActiveTenantLease(prisma, options.tenantId, async () => {
-      const response = await fetch(`${normalizeBaseUrl(settings.baseUrl)}/chat/completions`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+    const leased = await runWithActiveTenantLease(prisma, options.tenantId, () => callLlm(buildPrimaryLlmEndpoint(settings, apiKey), {
+      json: true,
+      defaults: { timeoutMs: tagMaintenanceTimeoutMs, maxTokens: 2000, temperature: 0 },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "你是校园墙标签库的自治维护 agent。只返回 JSON，不要 Markdown。",
+            `你只维护最近 ${lookbackDays} 天的稿件标签（这是一个近期活动特性，不回填历史稿件）。可以同时给出三类操作：create（新建标签）、merge（合并近义标签）、assign（给近期稿件补打标签）。`,
+            `create：只有当最近 ${lookbackDays} 天里同一主题反复出现、相似稿件达到 ${minClusterSize} 条及以上（postIds 至少 ${minClusterSize} 个）时，才新建一个标签。postIds 必须来自输入 posts 的 id。`,
+            "merge：当 tags 里存在含义重复或近义的标签时，把它们合并成一个规范名。from 是要被并入的标签名（可多个），into 是保留的规范标签名。不要制造近义重复标签。",
+            "assign：把 posts 里仍缺合适标签的近期稿件映射到合适标签上（已有标签或本次 create 的标签都行）。tags 用标签名，每条稿件最多 " + maxTagsPerPost + " 个；没有合适标签就不要硬打。",
+            "标签名要短中文，不含 #、表情、个人隐私、姓名、QQ、联系方式。不确定时宁可少操作。",
+            "不需要也不要输出归档/删除操作；系统会自动归档过去两周无新稿件的标签。",
+            "返回格式：{\"create\":[{\"name\":\"高考志愿\",\"description\":\"志愿填报相关\",\"color\":\"#dbeafe\",\"postIds\":[\"id1\",\"id2\",\"id3\"],\"confidence\":0到1}],\"merge\":[{\"from\":[\"近义名\"],\"into\":\"规范名\"}],\"assign\":[{\"postId\":\"id1\",\"tags\":[\"标签名\"]}]}",
+          ].join("\n"),
         },
-        body: JSON.stringify({
-          model: settings.model,
-          temperature: 0,
-          max_tokens: 2000,
-          response_format: { type: "json_object" },
-          messages: [
-          {
-            role: "system",
-            content: [
-              "你是校园墙标签库的自治维护 agent。只返回 JSON，不要 Markdown。",
-              `你只维护最近 ${lookbackDays} 天的稿件标签（这是一个近期活动特性，不回填历史稿件）。可以同时给出三类操作：create（新建标签）、merge（合并近义标签）、assign（给近期稿件补打标签）。`,
-              `create：只有当最近 ${lookbackDays} 天里同一主题反复出现、相似稿件达到 ${minClusterSize} 条及以上（postIds 至少 ${minClusterSize} 个）时，才新建一个标签。postIds 必须来自输入 posts 的 id。`,
-              "merge：当 tags 里存在含义重复或近义的标签时，把它们合并成一个规范名。from 是要被并入的标签名（可多个），into 是保留的规范标签名。不要制造近义重复标签。",
-              "assign：把 posts 里仍缺合适标签的近期稿件映射到合适标签上（已有标签或本次 create 的标签都行）。tags 用标签名，每条稿件最多 " + maxTagsPerPost + " 个；没有合适标签就不要硬打。",
-              "标签名要短中文，不含 #、表情、个人隐私、姓名、QQ、联系方式。不确定时宁可少操作。",
-              "不需要也不要输出归档/删除操作；系统会自动归档过去两周无新稿件的标签。",
-              "返回格式：{\"create\":[{\"name\":\"高考志愿\",\"description\":\"志愿填报相关\",\"color\":\"#dbeafe\",\"postIds\":[\"id1\",\"id2\",\"id3\"],\"confidence\":0到1}],\"merge\":[{\"from\":[\"近义名\"],\"into\":\"规范名\"}],\"assign\":[{\"postId\":\"id1\",\"tags\":[\"标签名\"]}]}",
-            ].join("\n"),
-          },
-          {
-            role: "user",
-            content: JSON.stringify({
-              tags: tags.map((tag) => ({
-                name: tag.name,
-                description: tag.description,
-                status: tag.status,
-                source: tag.source,
-                postCount: tag._count.assignments,
-                lastUsedAt: tag.lastUsedAt?.toISOString() ?? null,
-              })),
-              posts: posts.map((post) => ({
-                id: post.id,
-                displayId: post.displayId,
-                createdAt: post.createdAt.toISOString(),
-                text: post.text.slice(0, tagAgentPostTextChars),
-                tags: post.tagAssignments.map((assignment) => assignment.tag.name),
-              })),
-              lookbackDays,
-              minClusterSize,
-            }),
-          },
-        ],
-      }),
-      });
-      const data = (await response.json().catch(() => null)) as
-        | { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } }
-        | null;
-      return { response, data };
-    });
+        {
+          role: "user",
+          content: JSON.stringify({
+            tags: tags.map((tag) => ({
+              name: tag.name,
+              description: tag.description,
+              status: tag.status,
+              source: tag.source,
+              postCount: tag._count.assignments,
+              lastUsedAt: tag.lastUsedAt?.toISOString() ?? null,
+            })),
+            posts: posts.map((post) => ({
+              id: post.id,
+              displayId: post.displayId,
+              createdAt: post.createdAt.toISOString(),
+              text: post.text.slice(0, tagAgentPostTextChars),
+              tags: post.tagAssignments.map((assignment) => assignment.tag.name),
+            })),
+            lookbackDays,
+            minClusterSize,
+          }),
+        },
+      ],
+    }));
     if (!leased.active) {
       return applied;
     }
-    const { response, data } = leased.value;
-    if (!response.ok) {
-      options.logger.warn({ tenantId: options.tenantId, status: response.status, error: data?.error?.message }, "post tag maintenance: LLM request failed");
-      const archived = await runWithActiveTenantLease(
-        prisma,
-        options.tenantId,
-        (transaction) => archiveInactivePostTags(options.tenantId, archiveSince, transaction),
-      );
-      return archived.active ? { ...applied, archived: archived.value } : applied;
-    }
-    const plan = parsePostTagMaintenanceJson(data?.choices?.[0]?.message?.content ?? "");
+    const plan = parsePostTagMaintenanceJson(leased.value.text);
     if (plan) {
       const planned = await runWithActiveTenantLease(
         prisma,
@@ -417,10 +363,7 @@ export async function maintainTenantPostTags(options: {
       }
     }
   } catch (error) {
-    const aborted = error instanceof Error && error.name === "AbortError";
-    options.logger.warn({ error, tenantId: options.tenantId, aborted }, "post tag maintenance: LLM call errored");
-  } finally {
-    clearTimeout(timeout);
+    options.logger.warn({ tenantId: options.tenantId, ...describeLlmFailure(error) }, "post tag maintenance: LLM call failed");
   }
   const archiveLease = await runWithActiveTenantLease(
     prisma,
@@ -795,21 +738,7 @@ function normalizeHexColor(value: unknown): string | null {
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> | null {
-  const trimmed = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
-  if (!trimmed) {
-    return null;
-  }
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start < 0 || end <= start) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(trimmed.slice(start, end + 1));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
+  return extractFirstJsonObject(raw);
 }
 
 function uniqueStrings(values: string[]): string[] {

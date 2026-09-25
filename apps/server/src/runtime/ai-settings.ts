@@ -11,6 +11,8 @@ import {
   type PostReviewRules,
   type PostReviewRulesInput,
 } from "./ai-post-review-settings";
+import { executeLlmRequest, type LlmCallReport, type LlmEndpoint, type LlmUsage } from "./llm-client";
+import { defaultLlmModelParams, normalizeLlmModelParams, type LlmModelParams, type LlmModelParamsInput } from "./llm-params";
 
 export type TenantAiSettingsPayload = {
   enabled: boolean;
@@ -37,6 +39,8 @@ export type AiRules = PostReviewRules & {
   postTriggerKeywords?: string[] | undefined;
   /** 私聊投稿 AI 语义收稿的完整系统提示词，留空使用内置默认提示词 */
   privatePostPrompt?: string | undefined;
+  /** 主模型的高级请求参数（接口格式、输出上限、推理强度等） */
+  llmParams?: LlmModelParamsInput | undefined;
 };
 
 export type TenantAiSettingsUpdate = {
@@ -52,6 +56,20 @@ export type TenantAiSettingsUpdate = {
   rules?: (AiRules & PostReviewRulesInput) | undefined;
 };
 
+/** 测试连接的诊断信息：对照网关实际返回了什么。 */
+export type LlmDiagnostics = {
+  httpStatus: number | null;
+  finishReason: string | null;
+  usage: LlmUsage | null;
+  /** 提取出的正文（截断到 1000 字） */
+  text: string;
+  /** 原始响应体前 2KB（已脱敏） */
+  rawBody: string;
+  errorKind: string | null;
+  apiFormat: LlmModelParams["apiFormat"];
+  stream: boolean;
+};
+
 export type TenantAiSettingsTestResult = {
   ok: boolean;
   mode: "local" | "llm";
@@ -60,7 +78,34 @@ export type TenantAiSettingsTestResult = {
   baseUrl: string;
   latencyMs: number | null;
   message: string;
+  diagnostics?: LlmDiagnostics | null;
 };
+
+/** 测试连接的默认输出上限：给推理模型的思考过程留足余量。 */
+export const llmTestDefaultMaxTokens = 1_024;
+
+export function toLlmDiagnostics(report: LlmCallReport): LlmDiagnostics {
+  return {
+    httpStatus: report.httpStatus,
+    finishReason: report.finishReason,
+    usage: report.usage,
+    text: report.text.slice(0, 1_000),
+    rawBody: report.rawBody,
+    errorKind: report.error?.kind ?? null,
+    apiFormat: report.apiFormat,
+    stream: report.stream,
+  };
+}
+
+/** 主模型（租户 AI 设置）对应的请求端点。 */
+export function buildPrimaryLlmEndpoint(settings: Pick<TenantAiSettingsPayload, "baseUrl" | "model" | "rules">, apiKey: string): LlmEndpoint {
+  return {
+    baseUrl: normalizeBaseUrl(settings.baseUrl),
+    model: settings.model,
+    apiKey,
+    params: normalizeLlmModelParams(settings.rules.llmParams),
+  };
+}
 
 const defaultAiSettings: TenantAiSettingsPayload = {
   enabled: true,
@@ -79,6 +124,7 @@ const defaultAiSettings: TenantAiSettingsPayload = {
     privatePostAggregateDelaySeconds: 8,
     postTriggerKeywords: [],
     privatePostPrompt: DEFAULT_PRIVATE_POST_PROMPT,
+    llmParams: defaultLlmModelParams,
     ...defaultPostReviewRules,
   },
 };
@@ -184,88 +230,32 @@ export async function testTenantAiSettings(
     };
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1_000);
-  const startedAt = Date.now();
-  try {
-    const leased = await runWithActiveTenantLease(prisma, tenantId, async () => {
-      const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        max_tokens: 32,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: "只返回 JSON。",
-          },
-          {
-            role: "user",
-            content: "请返回 {\"ok\":true,\"message\":\"ready\"}",
-          },
-        ],
-      }),
-      });
-      const data = await response.json().catch(() => null) as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } } | null;
-      return { response, data };
-    });
-    if (!leased.active) {
-      return { ok: false, mode, provider, model, baseUrl, latencyMs: null, message: "校园墙已暂停或归档。" };
-    }
-    const { response, data } = leased.value;
-    const latencyMs = Date.now() - startedAt;
-    if (!response.ok) {
-      return {
-        ok: false,
-        mode,
-        provider,
-        model,
-        baseUrl,
-        latencyMs,
-        message: data?.error?.message || `LLM 请求失败：${response.status}`,
-      };
-    }
-    const content = data?.choices?.[0]?.message?.content;
-    if (!content) {
-      return {
-        ok: false,
-        mode,
-        provider,
-        model,
-        baseUrl,
-        latencyMs,
-        message: "LLM 已响应，但没有返回内容。",
-      };
-    }
-    return {
-      ok: true,
-      mode,
-      provider,
-      model,
-      baseUrl,
-      latencyMs,
-      message: "LLM 配置可用。",
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      mode,
-      provider,
-      model,
-      baseUrl,
-      latencyMs: Date.now() - startedAt,
-      message: error instanceof Error && error.name === "AbortError" ? "LLM 测试超时。" : error instanceof Error ? error.message : "LLM 测试失败。",
-    };
-  } finally {
-    clearTimeout(timeout);
+  const params = normalizeLlmModelParams(input.rules?.llmParams ?? current.rules.llmParams);
+  const leased = await runWithActiveTenantLease(prisma, tenantId, () => executeLlmRequest(
+    { baseUrl, model, apiKey, params },
+    {
+      messages: [
+        { role: "system", content: "只返回 JSON。" },
+        { role: "user", content: "请返回 {\"ok\":true,\"message\":\"ready\"}" },
+      ],
+      json: true,
+      defaults: { timeoutMs: timeoutSeconds * 1_000, maxTokens: llmTestDefaultMaxTokens, temperature: 0 },
+    },
+  ));
+  if (!leased.active) {
+    return { ok: false, mode, provider, model, baseUrl, latencyMs: null, message: "校园墙已暂停或归档。" };
   }
+  const report = leased.value;
+  return {
+    ok: report.ok,
+    mode,
+    provider,
+    model,
+    baseUrl,
+    latencyMs: report.latencyMs,
+    message: report.ok ? "LLM 配置可用。" : report.error?.message ?? "LLM 测试失败。",
+    diagnostics: toLlmDiagnostics(report),
+  };
 }
 
 export async function resolveTenantAiApiKey(
@@ -296,6 +286,7 @@ export function normalizeAiRules(value: unknown): AiRules {
     privatePostAggregateDelaySeconds: normalizeNumber(candidate.privatePostAggregateDelaySeconds, 0, 120, defaultAiSettings.rules.privatePostAggregateDelaySeconds ?? 8),
     postTriggerKeywords: normalizeStringArray(candidate.postTriggerKeywords ?? defaultAiSettings.rules.postTriggerKeywords),
     privatePostPrompt: normalizePrivatePostPrompt(candidate.privatePostPrompt),
+    llmParams: normalizeLlmModelParams(candidate.llmParams),
     ...normalizePostReviewRules(candidate),
   };
 }

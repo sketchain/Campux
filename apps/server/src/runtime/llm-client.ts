@@ -555,3 +555,11 @@ function isNonEmptyObject(value: unknown) {
 function numberOrNull(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
+
+/** 日志用：把 LlmError 或其他异常整理成简短字段。 */
+export function describeLlmFailure(error: unknown): { errorKind: string; error: string; httpStatus?: number | null } {
+  if (error instanceof LlmError) {
+    return { errorKind: error.kind, error: error.message, httpStatus: error.report.httpStatus };
+  }
+  return { errorKind: "unknown", error: error instanceof Error ? error.message : String(error) };
+}

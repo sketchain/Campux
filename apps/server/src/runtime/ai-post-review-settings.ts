@@ -6,6 +6,7 @@ import {
 } from "@campux/domain";
 import type { Prisma } from "@campux/db";
 import { decryptJson, encryptJson } from "../lib/secret-json";
+import { defaultLlmModelParams, normalizeLlmModelParams, type LlmModelParamsInput } from "./llm-params";
 
 /**
  * AI 自动审核的配置项。
@@ -38,6 +39,8 @@ export type PostReviewRules = {
   postReviewFallbackModel?: string | undefined;
   /** 备用模型 API Key 是否已配置（只读） */
   postReviewFallbackApiKeyConfigured?: boolean | undefined;
+  /** 备用模型的高级请求参数 */
+  postReviewFallbackParams?: LlmModelParamsInput | undefined;
 };
 
 /** 写接口额外接受的字段：明文 Key 只在写入时出现，落库前加密。 */
@@ -55,6 +58,7 @@ export const defaultPostReviewRules: Required<PostReviewRules> = {
   postReviewFallbackBaseUrl: "",
   postReviewFallbackModel: "",
   postReviewFallbackApiKeyConfigured: false,
+  postReviewFallbackParams: defaultLlmModelParams,
 };
 
 /** 把 rules 里与自动审核相关的字段规整成对外形态。 */
@@ -66,6 +70,7 @@ export function normalizePostReviewRules(candidate: Record<string, unknown>): Re
     postReviewFallbackBaseUrl: normalizeOptionalBaseUrl(candidate.postReviewFallbackBaseUrl),
     postReviewFallbackModel: typeof candidate.postReviewFallbackModel === "string" ? candidate.postReviewFallbackModel.trim().slice(0, 120) : "",
     postReviewFallbackApiKeyConfigured: isStoredSecret(candidate[postReviewFallbackSecretKey]),
+    postReviewFallbackParams: normalizeLlmModelParams(candidate.postReviewFallbackParams),
   };
 }
 

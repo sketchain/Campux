@@ -5,6 +5,7 @@ import {
   formatAiReviewComment,
   formatAiReviewFailedNote,
   isAiPostReviewActive,
+  postReviewBudgetWarnings,
 } from "./ai-post-review";
 import type { TenantAiSettingsPayload } from "./ai-settings";
 
@@ -38,5 +39,17 @@ describe("isAiPostReviewActive", () => {
     expect(isAiPostReviewActive({ ...base, enabled: false })).toBe(false);
     expect(isAiPostReviewActive({ ...base, rules: { postReviewEnabled: false } })).toBe(false);
     expect(isAiPostReviewActive({ ...base, rules: {} })).toBe(false);
+  });
+});
+
+describe("postReviewBudgetWarnings", () => {
+  test("warns when the diagnostic run used more tokens than the real review budget", () => {
+    expect(postReviewBudgetWarnings(120, 300, "max_tokens")).toEqual([]);
+    expect(postReviewBudgetWarnings(null, 300, "max_tokens")).toEqual([]);
+    expect(postReviewBudgetWarnings(900, 300, "omit")).toEqual([]);
+    const warnings = postReviewBudgetWarnings(900, 300, "max_completion_tokens");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("900");
+    expect(warnings[0]).toContain("300");
   });
 });

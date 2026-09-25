@@ -41,6 +41,9 @@ export type LlmModelParams = {
   timeoutSeconds: number | null;
 };
 
+/** 写入 / 表单提交时的形态：每项可缺省，使用前统一经 normalizeLlmModelParams 补齐。 */
+export type LlmModelParamsInput = { [K in keyof LlmModelParams]?: LlmModelParams[K] | undefined };
+
 export const LLM_MAX_TOKENS_LIMIT = 200_000;
 export const LLM_TIMEOUT_SECONDS_MIN = 5;
 export const LLM_TIMEOUT_SECONDS_MAX = 600;

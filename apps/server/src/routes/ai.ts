@@ -6,6 +6,30 @@ import { writeAuditLog } from "../lib/audit";
 import { readTenantAiSettings, testTenantAiSettings, updateTenantAiSettings } from "../runtime/ai-settings";
 import { POST_REVIEW_MAX_RETRIES_LIMIT, POST_REVIEW_PROMPT_MAX_LENGTH } from "../runtime/ai-post-review-settings";
 import { testPostReviewModel } from "../runtime/ai-post-review";
+import {
+  LLM_EXTRA_BODY_MAX_BYTES,
+  LLM_MAX_TOKENS_LIMIT,
+  LLM_TIMEOUT_SECONDS_MAX,
+  LLM_TIMEOUT_SECONDS_MIN,
+  llmApiFormats,
+  llmJsonModes,
+  llmMaxTokensFields,
+  llmReasoningEfforts,
+  llmTemperatureModes,
+} from "../runtime/llm-params";
+
+export const llmParamsSchema = z.object({
+  apiFormat: z.enum(llmApiFormats).optional(),
+  maxTokensField: z.enum(llmMaxTokensFields).optional(),
+  maxTokens: z.number().int().min(1).max(LLM_MAX_TOKENS_LIMIT).nullable().optional(),
+  reasoningEffort: z.enum(llmReasoningEfforts).optional(),
+  temperatureMode: z.enum(llmTemperatureModes).optional(),
+  temperature: z.number().min(0).max(2).optional(),
+  jsonMode: z.enum(llmJsonModes).optional(),
+  stream: z.boolean().optional(),
+  extraBody: z.record(z.unknown()).refine((value) => JSON.stringify(value).length <= LLM_EXTRA_BODY_MAX_BYTES, "额外请求体过大").optional(),
+  timeoutSeconds: z.number().int().min(LLM_TIMEOUT_SECONDS_MIN).max(LLM_TIMEOUT_SECONDS_MAX).nullable().optional(),
+});
 
 export const aiSettingsSchema = z.object({
   enabled: z.boolean().optional(),
@@ -24,6 +48,8 @@ export const aiSettingsSchema = z.object({
     privatePostAggregateDelaySeconds: z.number().int().min(0).max(120).optional(),
     postTriggerKeywords: z.array(z.string().trim().min(1).max(30)).max(20).optional(),
     privatePostPrompt: z.string().trim().max(PRIVATE_POST_PROMPT_MAX_LENGTH).optional(),
+    llmParams: llmParamsSchema.optional(),
+    postReviewFallbackParams: llmParamsSchema.optional(),
     postReviewEnabled: z.boolean().optional(),
     postReviewPrompt: z.string().trim().max(POST_REVIEW_PROMPT_MAX_LENGTH).optional(),
     postReviewMaxRetries: z.number().int().min(0).max(POST_REVIEW_MAX_RETRIES_LIMIT).optional(),

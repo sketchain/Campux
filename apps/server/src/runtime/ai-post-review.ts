@@ -8,10 +8,26 @@ import { prisma } from "../lib/prisma";
 import { readTenantPublishMode } from "../lib/tenant-metadata";
 import { isTenantRuntimeActive } from "../lib/tenant-runtime";
 import { runWithActiveTenantLease } from "../lib/tenant-runtime-lease";
-import { normalizeBaseUrl, readTenantAiSettings, resolveTenantAiApiKey, type TenantAiSettingsPayload, type TenantAiSettingsUpdate } from "./ai-settings";
+import {
+  buildPrimaryLlmEndpoint,
+  llmTestDefaultMaxTokens,
+  normalizeBaseUrl,
+  readTenantAiSettings,
+  resolveTenantAiApiKey,
+  toLlmDiagnostics,
+  type LlmDiagnostics,
+  type TenantAiSettingsPayload,
+  type TenantAiSettingsUpdate,
+} from "./ai-settings";
+import { executeLlmRequest } from "./llm-client";
+import { normalizeLlmModelParams } from "./llm-params";
 import { readPostReviewFallbackApiKey } from "./ai-post-review-settings";
 import {
+  buildPostReviewMessages,
   callPostReviewModel,
+  parsePostReviewDecision,
+  postReviewMaxTokens,
+  postReviewTemperature,
   exceedsPostReviewImageBudget,
   preparePostReviewImage,
   runPostReviewWithFallback,
@@ -355,7 +371,7 @@ export async function resolvePostReviewEndpoints(tenantId: string, settings: Ten
   if (settings.mode === "llm" && settings.apiKeyConfigured) {
     const apiKey = await resolveTenantAiApiKey(tenantId, {});
     if (apiKey) {
-      endpoints.push({ label: "primary", baseUrl: normalizeBaseUrl(settings.baseUrl), model: settings.model, apiKey, timeoutMs });
+      endpoints.push({ label: "primary", ...buildPrimaryLlmEndpoint(settings, apiKey), timeoutMs });
     }
   }
   const fallback = await readFallbackEndpoint(tenantId, timeoutMs);
@@ -374,7 +390,7 @@ async function readFallbackEndpoint(tenantId: string, timeoutMs: number): Promis
   if (!baseUrl || !model || !apiKey) {
     return null;
   }
-  return { label: "fallback", baseUrl, model, apiKey, timeoutMs };
+  return { label: "fallback", baseUrl, model, apiKey, timeoutMs, params: normalizeLlmModelParams(rules.postReviewFallbackParams) };
 }
 
 async function loadPendingPost(postId: string): Promise<ReviewPost | null> {
@@ -392,6 +408,9 @@ export type PostReviewModelTestResult = {
   baseUrl: string;
   latencyMs: number | null;
   message: string;
+  diagnostics?: LlmDiagnostics | null;
+  /** 测试通过但实际审核可能出问题时的提醒 */
+  warnings?: string[];
 };
 
 /** 64×64 纯色 PNG，用于连接测试时确认模型接受 image_url 输入。 */
@@ -420,6 +439,7 @@ export async function testPostReviewModel(
       model: input.model?.trim() || current.model,
       apiKey: await resolveTenantAiApiKey(tenantId, input),
       timeoutMs,
+      params: normalizeLlmModelParams(input.rules?.llmParams ?? current.rules.llmParams),
     };
   } else {
     const row = await prisma.tenantAiSettings.findUnique({ where: { tenantId }, select: { rules: true } });
@@ -431,6 +451,7 @@ export async function testPostReviewModel(
       apiKey: rules?.postReviewFallbackApiKey?.trim()
         || (rules?.postReviewFallbackClearApiKey ? "" : readPostReviewFallbackApiKey(row?.rules)),
       timeoutMs,
+      params: normalizeLlmModelParams(rules?.postReviewFallbackParams ?? current.rules.postReviewFallbackParams),
     };
   }
 
@@ -445,25 +466,45 @@ export async function testPostReviewModel(
     return { ...base, ok: false, latencyMs: null, message: "校园墙已暂停或归档。" };
   }
 
-  const startedAt = Date.now();
+  const report = await executeLlmRequest(
+    { baseUrl: endpoint.baseUrl, model: endpoint.model, apiKey: endpoint.apiKey, params: endpoint.params },
+    {
+      messages: buildPostReviewMessages({
+        prompt: input.rules?.postReviewPrompt?.trim() || current.rules.postReviewPrompt || "",
+        text: "测试稿件：今天食堂的红烧肉很好吃，推荐大家去试试。",
+        images: [postReviewTestImage],
+      }),
+      json: true,
+      // 诊断请求给足输出上限；实际审核的预算见下方 warnings。
+      defaults: { timeoutMs, maxTokens: llmTestDefaultMaxTokens, temperature: postReviewTemperature },
+    },
+    fetchImpl,
+  );
+  const diagnostics = toLlmDiagnostics(report);
+  const reviewBudget = endpoint.params?.maxTokens ?? postReviewMaxTokens;
+  const warnings = postReviewBudgetWarnings(report.usage?.completionTokens ?? null, reviewBudget, endpoint.params?.maxTokensField ?? "max_tokens");
+  if (!report.ok) {
+    return { ...base, ok: false, latencyMs: report.latencyMs, message: report.error?.message ?? "测试失败", diagnostics, warnings };
+  }
   try {
-    const decision = await callPostReviewModel(endpoint, {
-      prompt: input.rules?.postReviewPrompt?.trim() || current.rules.postReviewPrompt || "",
-      text: "测试稿件：今天食堂的红烧肉很好吃，推荐大家去试试。",
-      images: [postReviewTestImage],
-    }, fetchImpl);
+    const decision = parsePostReviewDecision(report.text);
     return {
       ...base,
       ok: true,
-      latencyMs: Date.now() - startedAt,
+      latencyMs: report.latencyMs,
       message: `模型可用，测试稿件判定为「${decision.decision === "approve" ? "通过" : "拒绝"}」：${decision.reason}`,
+      diagnostics,
+      warnings,
     };
   } catch (error) {
-    return {
-      ...base,
-      ok: false,
-      latencyMs: Date.now() - startedAt,
-      message: error instanceof Error ? error.message : "测试失败",
-    };
+    return { ...base, ok: false, latencyMs: report.latencyMs, message: error instanceof Error ? error.message : "测试失败", diagnostics, warnings };
   }
+}
+
+/** 测试用了 1024 的上限；若本次输出已超过实际审核的预算，提醒调大输出上限。 */
+export function postReviewBudgetWarnings(completionTokens: number | null, reviewBudget: number, maxTokensField: string): string[] {
+  if (maxTokensField === "omit" || completionTokens === null || completionTokens <= reviewBudget) {
+    return [];
+  }
+  return [`本次测试输出用了 ${completionTokens} 个 token（含思考），超过实际审核的输出上限 ${reviewBudget}，正式审核可能被截断。请在高级参数里调大输出上限或降低推理强度。`];
 }
