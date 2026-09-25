@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import type { LlmDiagnostics, LlmModelParams } from "@/types/app";
+import { LlmAdvancedParams } from "./LlmAdvancedParams";
+import { LlmDiagnosticsView } from "./LlmDiagnosticsView";
 
 export type AiPostReviewForm = {
   postReviewEnabled: boolean;
@@ -16,6 +19,7 @@ export type AiPostReviewForm = {
   postReviewFallbackModel: string;
   postReviewFallbackApiKey: string;
   postReviewFallbackClearApiKey: boolean;
+  postReviewFallbackParams: LlmModelParams;
 };
 
 type PostReviewTestResult = {
@@ -24,6 +28,8 @@ type PostReviewTestResult = {
   model: string;
   latencyMs: number | null;
   message: string;
+  diagnostics?: LlmDiagnostics | null;
+  warnings?: string[];
 };
 
 /**
@@ -150,18 +156,20 @@ export function AiPostReviewSettings<Form extends AiPostReviewForm>({
             onChange={(event) => onFormChange({ ...form, postReviewFallbackApiKey: event.target.value, postReviewFallbackClearApiKey: false })}
           />
         </label>
+        <div className="md:col-span-2">
+          <LlmAdvancedParams
+            value={form.postReviewFallbackParams}
+            disabled={busy}
+            onChange={(postReviewFallbackParams) => onFormChange({ ...form, postReviewFallbackParams })}
+            budgetHint="留空时审核沿用原预算 300；连接测试用 1024 并在超出审核预算时提醒。"
+          />
+        </div>
       </div>
 
       {results.length > 0 ? (
         <div className="mt-3 grid gap-2">
           {results.map((result) => (
-            <div
-              key={result.target}
-              className={`rounded-md border p-2 text-xs font-semibold leading-5 ${result.ok ? "border-green-200 bg-green-50 text-green-700" : "border-rose-200 bg-rose-50 text-rose-700"}`}
-            >
-              {result.target === "primary" ? "主模型" : "备用模型"} {result.model || "未填写"}
-              {result.latencyMs === null ? "" : ` · ${result.latencyMs}ms`}：{result.message}
-            </div>
+            <LlmDiagnosticsView key={result.target} result={result} title={result.target === "primary" ? "主模型" : "备用模型"} />
           ))}
         </div>
       ) : null}

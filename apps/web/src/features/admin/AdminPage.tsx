@@ -51,10 +51,12 @@ import {
 } from "../ops/membership-removal-confirmation";
 import { readListPreferences, writeListPreferences } from "@/lib/list-preferences";
 import { hasAnyQueryParam, readQueryInt, readQueryParam, writeQueryParams } from "@/lib/url-query";
-import type { AdminBanRecord, AdminBotAccount, AdminBotEvent, AdminMember, AdminMemberDetail, AdminTab, AiRules, OAuthClientItem, OAuthClientSecretResponse, OAuthClientSettingsResponse, OAuthServerSettings, Pagination, PublishAttemptItem, PublishTargetItem, PublishTextTemplate, TenantAiSettings, TenantMetadata, TenantRole } from "@/types/app";
+import type { AdminBanRecord, AdminBotAccount, AdminBotEvent, AdminMember, AdminMemberDetail, AdminTab, AiRules, LlmDiagnostics, LlmModelParams, OAuthClientItem, OAuthClientSecretResponse, OAuthClientSettingsResponse, OAuthServerSettings, Pagination, PublishAttemptItem, PublishTargetItem, PublishTextTemplate, TenantAiSettings, TenantMetadata, TenantRole } from "@/types/app";
 import { EmptyCard, LoadingBlock, PaginationControls } from "@/components/app/utility";
 import { PluginConfigPage } from "./PluginConfigPage";
 import { AiPostReviewSettings } from "./AiPostReviewSettings";
+import { LlmAdvancedParams, withLlmParamDefaults } from "./LlmAdvancedParams";
+import { LlmDiagnosticsView } from "./LlmDiagnosticsView";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -181,6 +183,8 @@ type AiSettingsForm = {
   postReviewFallbackModel: string;
   postReviewFallbackApiKey: string;
   postReviewFallbackClearApiKey: boolean;
+  llmParams: LlmModelParams;
+  postReviewFallbackParams: LlmModelParams;
 };
 
 type LlmTestResult = {
@@ -191,6 +195,7 @@ type LlmTestResult = {
   baseUrl: string;
   latencyMs: number | null;
   message: string;
+  diagnostics?: LlmDiagnostics | null;
 };
 
 type TenantLogoUploadResponse = {
@@ -610,6 +615,8 @@ export function AdminPage({
       postReviewFallbackModel: aiForm.postReviewFallbackModel.trim(),
       postReviewFallbackApiKey: aiForm.postReviewFallbackApiKey.trim() || undefined,
       postReviewFallbackClearApiKey: aiForm.postReviewFallbackClearApiKey,
+      llmParams: aiForm.llmParams,
+      postReviewFallbackParams: aiForm.postReviewFallbackParams,
     };
     return {
       enabled: aiForm.enabled,
@@ -2256,6 +2263,13 @@ function AdminAiSettingsPanel({
             </label>
           </div>
 
+          <LlmAdvancedParams
+            value={form.llmParams}
+            disabled={busy || testing}
+            onChange={(llmParams) => onFormChange({ ...form, llmParams })}
+            budgetHint="留空时各功能沿用原预算：测试连接 1024、审核 300、打标 500、语义收稿 600、标签维护 2000，发布提要不限制。"
+          />
+
           <div className="grid gap-3">
             <AiPostReviewSettings
               form={form}
@@ -2330,12 +2344,7 @@ function AdminAiSettingsPanel({
             </label>
           </div>
 
-          {testResult ? (
-            <div className={`rounded-md border p-3 text-sm font-semibold leading-6 ${testResult.ok ? "border-green-200 bg-green-50 text-green-700" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
-              <div>{testResult.message}</div>
-              <div className="mt-1 text-xs opacity-80">{testResult.model} · {testResult.latencyMs === null ? "本地模式" : `${testResult.latencyMs}ms`}</div>
-            </div>
-          ) : null}
+          {testResult ? <LlmDiagnosticsView result={testResult} /> : null}
 
           <div className="flex flex-wrap justify-end gap-2">
             {settings.apiKeyConfigured ? (
@@ -4027,6 +4036,8 @@ function aiSettingsToForm(settings: TenantAiSettings): AiSettingsForm {
     postReviewFallbackModel: settings.rules.postReviewFallbackModel ?? "",
     postReviewFallbackApiKey: "",
     postReviewFallbackClearApiKey: false,
+    llmParams: withLlmParamDefaults(settings.rules.llmParams),
+    postReviewFallbackParams: withLlmParamDefaults(settings.rules.postReviewFallbackParams),
   };
 }
 

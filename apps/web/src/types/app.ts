@@ -572,6 +572,45 @@ export type AiRules = {
   postReviewFallbackApiKey?: string | undefined;
   /** 只写：清除备用模型 API Key */
   postReviewFallbackClearApiKey?: boolean;
+  /** 主模型高级请求参数 */
+  llmParams?: LlmModelParams;
+  /** 审核备用模型高级请求参数 */
+  postReviewFallbackParams?: LlmModelParams;
+};
+
+/** 大模型高级请求参数；每一项都可以「不发送」，以兼容挑剔的网关。 */
+export type LlmModelParams = {
+  apiFormat: "chat_completions" | "responses";
+  maxTokensField: "max_tokens" | "max_completion_tokens" | "omit";
+  /** null 表示用各调用自己的默认预算 */
+  maxTokens: number | null;
+  reasoningEffort: "omit" | "minimal" | "low" | "medium" | "high";
+  temperatureMode: "default" | "custom" | "omit";
+  temperature: number;
+  jsonMode: "native" | "prompt";
+  stream: boolean;
+  extraBody: Record<string, unknown>;
+  /** null 表示用各调用自己的默认超时 */
+  timeoutSeconds: number | null;
+};
+
+export type LlmUsage = {
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+  reasoningTokens: number | null;
+};
+
+/** 测试连接的诊断信息 */
+export type LlmDiagnostics = {
+  httpStatus: number | null;
+  finishReason: string | null;
+  usage: LlmUsage | null;
+  text: string;
+  rawBody: string;
+  errorKind: string | null;
+  apiFormat: LlmModelParams["apiFormat"];
+  stream: boolean;
 };
 
 export type PostTag = {
